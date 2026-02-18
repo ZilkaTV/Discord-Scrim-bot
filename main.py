@@ -77,7 +77,8 @@ async def create(ctx, *, args):
     timestamp = parts[1].strip()
     description = parts[2].strip()
 
-    embed = discord.Embed(title=name, description=f"{description}\n<t:{timestamp}:F>")
+    embed = discord.Embed(title=name, description=description)
+    embed.add_field(name="Datum", value=f"<t:{timestamp}:F>", inline=False)
     channel = bot.get_channel(CHANNEL_ID)
     mentions = " ".join(f"<@&{r}>" for r in MENTION_ROLES) or None
     msg = await channel.send(content=mentions, embed=embed)
