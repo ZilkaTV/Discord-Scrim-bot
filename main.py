@@ -254,6 +254,7 @@ async def delete(ctx, *, args):
     await ctx.send("✅ Event successfully ended!\n- 🗑️ Messages deleted\n- 👥 Roles removed\n- 🧹 Scrim chat cleared")
 
 
+
 @bot.command()
 async def cancel(ctx, *, args):
     parts = [p.strip() for p in args.split(",")]
@@ -270,6 +271,7 @@ async def cancel(ctx, *, args):
     await ctx.send("⏳ Cancelling event and deleting messages...")
 
     guild = ctx.guild
+    role = guild.get_role(ROLE_ID)
     register_channel = bot.get_channel(CHANNEL_ID)
 
     target_event = None
@@ -318,8 +320,16 @@ async def cancel(ctx, *, args):
         await ctx.send(f"❌ Event cancelled but error deleting message: `{e}`")
         return
 
-    await ctx.send(f"✅ Event **{target_event.name}** has been cancelled and its message has been deleted!")
+    try:
+        remaining_message_ids = get_all_message_ids(data)
+        reacted_ids = await get_all_reacted_ids(register_channel, remaining_message_ids)
+        await sync_roles(guild, role, reacted_ids)
+        print("Roles synced after cancellation")
+    except Exception as e:
+        await ctx.send(f"⚠️ Event cancelled but error syncing roles: `{e}`")
+        return
 
+    await ctx.send(f"✅ Event **{target_event.name}** has been cancelled!\n- 🗑️ Message deleted\n- 👥 Roles updated")
 
 @bot.event
 async def on_raw_reaction_add(payload):
