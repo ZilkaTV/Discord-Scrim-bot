@@ -170,6 +170,7 @@ async def create(ctx, *, args):
     await ctx.send(f"✅ Event **{title}** successfully created and posted! 🎉\n{event_link}")
     print(f"Created event {event.id} and message {msg.id}")
 
+
 @bot.command()
 async def delete(ctx, *, args):
     if args.strip().lower() != "event":
@@ -183,6 +184,7 @@ async def delete(ctx, *, args):
     register_channel = bot.get_channel(CHANNEL_ID)
     scrim_channel = bot.get_channel(SCRIM_CHAT_ID)
 
+    # Find active event
     active_event = None
     try:
         events = await guild.fetch_scheduled_events()
@@ -198,22 +200,24 @@ async def delete(ctx, *, args):
         await ctx.send("❌ No active event found!")
         return
 
-try:
-    data = load_data()
-    event_id_str = str(active_event.id)
-    if event_id_str in data:
-        del data[event_id_str]
-    remaining_message_ids = get_all_message_ids(data)
-    reacted_ids = await get_all_reacted_ids(register_channel, remaining_message_ids)
-    await sync_roles(guild, role, reacted_ids)
-    print("Roles synced after event deletion")
-except discord.Forbidden:
-    await ctx.send("❌ I don't have permission to remove roles!")
-    return
-except Exception as e:
-    await ctx.send(f"❌ Error syncing roles: `{e}`")
-    return
+    # Remove roles only from members not signed up for other events
+    try:
+        data = load_data()
+        event_id_str = str(active_event.id)
+        if event_id_str in data:
+            del data[event_id_str]
+        remaining_message_ids = get_all_message_ids(data)
+        reacted_ids = await get_all_reacted_ids(register_channel, remaining_message_ids)
+        await sync_roles(guild, role, reacted_ids)
+        print("Roles synced after event deletion")
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to remove roles!")
+        return
+    except Exception as e:
+        await ctx.send(f"❌ Error syncing roles: `{e}`")
+        return
 
+    # Delete only the message of the active event
     try:
         data = load_data()
         event_id_str = str(active_event.id)
@@ -239,6 +243,7 @@ except Exception as e:
         await ctx.send(f"❌ Error deleting register messages: `{e}`")
         return
 
+    # Clear scrim chat
     try:
         deleted = await scrim_channel.purge(limit=500)
         print(f"{len(deleted)} messages deleted in scrim chat")
@@ -249,6 +254,7 @@ except Exception as e:
         await ctx.send(f"❌ Error clearing scrim chat: `{e}`")
         return
 
+    # End active event
     try:
         await active_event.end()
         print("Event ended")
@@ -256,8 +262,7 @@ except Exception as e:
         await ctx.send(f"⚠️ Messages and roles deleted but event could not be ended: `{e}`")
         return
 
-    await ctx.send("✅ Event successfully ended!\n- 🗑️ Messages deleted\n- 👥 Roles removed\n- 🧹 Scrim chat cleared")
-
+    await ctx.send("✅ Event successfully ended!\n- 🗑️ Messages deleted\n- 👥 Roles updated\n- 🧹 Scrim chat cleared")
 
 
 @bot.command()
@@ -279,6 +284,7 @@ async def cancel(ctx, *, args):
     role = guild.get_role(ROLE_ID)
     register_channel = bot.get_channel(CHANNEL_ID)
 
+    # Find the scheduled event
     target_event = None
     try:
         events = await guild.fetch_scheduled_events()
@@ -298,6 +304,7 @@ async def cancel(ctx, *, args):
         await ctx.send("❌ This event is already active! Use `r!delete event` instead.")
         return
 
+    # Cancel the event
     try:
         await target_event.cancel()
         print(f"Event {target_event.name} cancelled!")
@@ -305,6 +312,7 @@ async def cancel(ctx, *, args):
         await ctx.send(f"❌ Error cancelling event: `{e}`")
         return
 
+    # Delete the event's message and update data
     try:
         data = load_data()
         event_id_str = str(event_id)
@@ -317,14 +325,14 @@ async def cancel(ctx, *, args):
                 pass
             del data[event_id_str]
             save_data(data)
-            print("Event message deleted from register channel")
         else:
-            await ctx.send("⚠️ Event cancelled but no linked message was found in the register channel.")
+            await ctx.send("⚠️ Event cancelled but no linked message was found.")
             return
     except Exception as e:
         await ctx.send(f"❌ Event cancelled but error deleting message: `{e}`")
         return
 
+    # Sync roles - remove from members not in any remaining event
     try:
         remaining_message_ids = get_all_message_ids(data)
         reacted_ids = await get_all_reacted_ids(register_channel, remaining_message_ids)
@@ -335,6 +343,7 @@ async def cancel(ctx, *, args):
         return
 
     await ctx.send(f"✅ Event **{target_event.name}** has been cancelled!\n- 🗑️ Message deleted\n- 👥 Roles updated")
+
 
 @bot.event
 async def on_raw_reaction_add(payload):
