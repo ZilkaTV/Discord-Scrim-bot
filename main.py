@@ -204,13 +204,13 @@ async def delete(ctx, *, args):
             except discord.NotFound:
                 pass
         save_message_ids(set())
-        print("Register Channel Nachrichten gelöscht")
         async for message in register_channel.history(limit=100):
-             if message.author == bot.user:
-                 try:
+            if message.author == bot.user:
+                try:
                     await message.delete()
-            except discord.NotFound:
-                     pass
+                except discord.NotFound:
+                    pass
+        print("Register Channel Nachrichten gelöscht")
     except Exception as e:
         await ctx.send(f"❌ Fehler beim Löschen der Register-Nachrichten: `{e}`")
         return
