@@ -13,6 +13,7 @@ CHANNEL_ID = 1466912142530969650
 ROLE_ID = 1466913367380726004
 MENTION_ROLES = [1467057562108039250, 1467057940409352377]
 SCRIM_CHAT_ID = 1466915521420329204
+EVENT_CHANNEL_ID = 1467091170176929968
 
 IDS_FILE = "message_ids.json"
 
@@ -53,7 +54,6 @@ async def sync_roles(guild, role, reacted_ids: set):
         member = guild.get_member(user_id)
         if member and role not in member.roles:
             await member.add_roles(role)
-
     for member in role.members:
         if member.id not in reacted_ids:
             await member.remove_roles(role)
@@ -65,7 +65,6 @@ async def on_ready():
     channel = bot.get_channel(CHANNEL_ID)
     guild = channel.guild
     role = guild.get_role(ROLE_ID)
-
     message_ids = load_message_ids()
     reacted_ids = await get_all_reacted_ids(channel, message_ids)
     await sync_roles(guild, role, reacted_ids)
@@ -85,48 +84,46 @@ async def check_events():
                     try:
                         await event.start()
                         print(f"Event {event.name} wurde gestartet!")
-
                         channel = bot.get_channel(CHANNEL_ID)
                         role = guild.get_role(ROLE_ID)
                         event_link = f"https://discord.com/events/{guild.id}/{event.id}"
-
                         embed = discord.Embed(
                             title=f"🟢 {event.name} hat begonnen!",
                             description=f"Das Event **{event.name}** ist jetzt gestartet!\n[Zum Event]({event_link})",
                             color=discord.Color.green()
                         )
-
                         await channel.send(content=f"{role.mention}", embed=embed)
-
                     except Exception as e:
                         print(f"Fehler beim Starten von {event.name}: {e}")
 
 
 @check_events.before_loop
 async def before_check():
-        await bot.wait_until_ready()
+    await bot.wait_until_ready()
+
 
 @bot.command()
 async def create(ctx, *, args):
     parts = [p.strip() for p in args.split(",")]
     if len(parts) < 3:
-        await ctx.send("❌ Falsches Format! Benutze: `r!create Titel, Beschreibung, Timestamp`")
+        await ctx.send("❌ Falsches Format! Benutze: `r!create Titel, Beschreibung, <t:TIMESTAMP:R>`")
         return
 
     title = parts[0]
     description = parts[1]
 
     try:
-        timestamp = int(parts[2])
+        raw = parts[2].strip("<>").replace("t:", "").split(":")[0]
+        timestamp = int(raw)
     except ValueError:
-        await ctx.send("❌ Der Timestamp ist ungültig! Er muss eine Zahl sein, z.B. `1740060000`")
+        await ctx.send("❌ Der Timestamp ist ungültig!")
         return
 
     guild = ctx.guild
-    event_channel = guild.get_channel(1467091170176929968)
+    event_channel = guild.get_channel(EVENT_CHANNEL_ID)
 
     if event_channel is None:
-        await ctx.send("❌ Channel nicht gefunden! Überprüfe die Channel ID.")
+        await ctx.send("❌ Meeting Point Channel nicht gefunden!")
         return
 
     start_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
@@ -141,7 +138,7 @@ async def create(ctx, *, args):
             privacy_level=discord.PrivacyLevel.guild_only
         )
     except discord.Forbidden:
-        await ctx.send("❌ Ich habe keine Berechtigung Events zu erstellen! Gib mir die `Events verwalten` Permission.")
+        await ctx.send("❌ Ich habe keine Berechtigung Events zu erstellen!")
         return
     except Exception as e:
         await ctx.send(f"❌ Fehler beim Erstellen des Events: `{e}`")
@@ -159,7 +156,7 @@ async def create(ctx, *, args):
         msg = await channel.send(content=mentions, embed=embed)
         await msg.add_reaction("✅")
     except Exception as e:
-        await ctx.send(f"❌ Event wurde erstellt aber die Nachricht konnte nicht gepostet werden: `{e}`")
+        await ctx.send(f"❌ Event erstellt aber Nachricht konnte nicht gepostet werden: `{e}`")
         return
 
     message_ids = load_message_ids()
@@ -203,12 +200,12 @@ async def delete(ctx, *, args):
             except discord.NotFound:
                 pass
         save_message_ids(set())
-async for message in register_channel.history(limit=100):
-    if message.author == bot.user and message.id not in message_ids:
-        try:
-            await message.delete()
-        except discord.NotFound:
-            pass
+        async for message in register_channel.history(limit=100):
+            if message.author == bot.user and message.id not in message_ids:
+                try:
+                    await message.delete()
+                except discord.NotFound:
+                    pass
         print("Register Channel Nachrichten gelöscht")
     except Exception as e:
         await ctx.send(f"❌ Fehler beim Löschen der Register-Nachrichten: `{e}`")
@@ -244,7 +241,6 @@ async def on_raw_reaction_add(payload):
         return
     if str(payload.emoji) != "✅":
         return
-
     guild = bot.get_guild(payload.guild_id)
     role = guild.get_role(ROLE_ID)
     member = guild.get_member(payload.user_id)
@@ -259,14 +255,12 @@ async def on_raw_reaction_remove(payload):
         return
     if str(payload.emoji) != "✅":
         return
-
     guild = bot.get_guild(payload.guild_id)
     role = guild.get_role(ROLE_ID)
     channel = bot.get_channel(CHANNEL_ID)
     member = guild.get_member(payload.user_id)
     if member is None or member.bot:
         return
-
     still_reacted = False
     for msg_id in message_ids:
         if msg_id == payload.message_id:
@@ -285,7 +279,6 @@ async def on_raw_reaction_remove(payload):
             pass
         if still_reacted:
             break
-
     if not still_reacted:
         await member.remove_roles(role)
 
@@ -295,11 +288,9 @@ async def on_raw_message_delete(payload):
     message_ids = load_message_ids()
     if payload.message_id not in message_ids:
         return
-
     print(f"Tracked message {payload.message_id} was deleted, resyncing roles...")
     message_ids.discard(payload.message_id)
     save_message_ids(message_ids)
-
     channel = bot.get_channel(CHANNEL_ID)
     guild = channel.guild
     role = guild.get_role(ROLE_ID)
