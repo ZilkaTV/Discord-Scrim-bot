@@ -110,8 +110,8 @@ async def before_check():
 @bot.command()
 async def create(ctx, *, args):
     parts = [p.strip() for p in args.split(",")]
-    if len(parts) < 4:
-        await ctx.send("❌ Falsches Format! Benutze: `r!create Titel, Beschreibung, Timestamp, ChannelID`")
+     if len(parts) < 3:
+        await ctx.send("❌ Falsches Format! Benutze: `r!create Titel, Beschreibung, Timestamp`")
         return
 
     title = parts[0]
