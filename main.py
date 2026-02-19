@@ -209,7 +209,7 @@ async def delete(ctx, *, args):
              if message.author == bot.user:
                  try:
                     await message.delete()
-                   except discord.NotFound:
+            except discord.NotFound:
                      pass
     except Exception as e:
         await ctx.send(f"❌ Fehler beim Löschen der Register-Nachrichten: `{e}`")
