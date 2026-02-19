@@ -222,7 +222,7 @@ async def delete(ctx, *, args):
     try:
         events = await guild.fetch_scheduled_events()
         for event in events:
-            if event.status in [discord.EventStatus.active, discord.EventStatus.scheduled]:
+            if event.status == discord.EventStatus.active:
                 await event.end()
         print("Event beendet")
     except Exception as e:
