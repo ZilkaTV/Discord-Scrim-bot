@@ -123,14 +123,8 @@ async def create(ctx, *, args):
         await ctx.send("❌ Der Timestamp ist ungültig! Er muss eine Zahl sein, z.B. `1740060000`")
         return
 
-    try:
-        event_channel_id = int(parts[3])
-    except ValueError:
-        await ctx.send("❌ Die Channel ID ist ungültig! Sie muss eine Zahl sein.")
-        return
-
     guild = ctx.guild
-    event_channel = guild.get_channel(event_channel_id)
+    event_channel = guild.get_channel(1467091170176929968)
 
     if event_channel is None:
         await ctx.send("❌ Channel nicht gefunden! Überprüfe die Channel ID.")
