@@ -104,8 +104,7 @@ async def check_events():
 
 @check_events.before_loop
 async def before_check():
-    await bot.wait_until_ready()
-
+        await bot.wait_until_ready()
 
 @bot.command()
 async def create(ctx, *, args):
