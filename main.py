@@ -198,16 +198,21 @@ async def delete(ctx, *, args):
         await ctx.send("❌ No active event found!")
         return
 
-    try:
-        for member in list(role.members):
-            await member.remove_roles(role)
-        print("All roles removed")
-    except discord.Forbidden:
-        await ctx.send("❌ I don't have permission to remove roles!")
-        return
-    except Exception as e:
-        await ctx.send(f"❌ Error removing roles: `{e}`")
-        return
+try:
+    data = load_data()
+    event_id_str = str(active_event.id)
+    if event_id_str in data:
+        del data[event_id_str]
+    remaining_message_ids = get_all_message_ids(data)
+    reacted_ids = await get_all_reacted_ids(register_channel, remaining_message_ids)
+    await sync_roles(guild, role, reacted_ids)
+    print("Roles synced after event deletion")
+except discord.Forbidden:
+    await ctx.send("❌ I don't have permission to remove roles!")
+    return
+except Exception as e:
+    await ctx.send(f"❌ Error syncing roles: `{e}`")
+    return
 
     try:
         data = load_data()
