@@ -204,7 +204,7 @@ async def delete(ctx, *, args):
             except discord.NotFound:
                 pass
         save_message_ids(set())
-        async for message in register_channel.history(limit=100):
+async for message in register_channel.history(limit=100):
     if message.author == bot.user and message.id not in message_ids:
         try:
             await message.delete()
