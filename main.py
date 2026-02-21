@@ -11,6 +11,7 @@ intents.members = True
 
 CHANNEL_ID = 1466912142530969650
 ROLE_ID = 1466913367380726004
+ACTIVE_ROLE_ID = 1474720238695219220
 MENTION_ROLES = [1467057562108039250, 1467057940409352377]
 SCRIM_CHAT_ID = 1466915521420329204
 EVENT_CHANNEL_ID = 1467091170176929968
@@ -96,6 +97,16 @@ async def sync_roles(guild, role, reacted_ids: set):
             await member.remove_roles(role)
 
 
+async def remove_active_role_all(guild):
+    active_role = guild.get_role(ACTIVE_ROLE_ID)
+    if active_role:
+        for member in list(active_role.members):
+            try:
+                await member.remove_roles(active_role)
+            except Exception as e:
+                print(f"Error removing active role from {member.display_name}: {e}")
+
+
 @bot.event
 async def on_ready():
     print("Bot ready")
@@ -119,7 +130,6 @@ async def check_events():
             if event.status == discord.EventStatus.scheduled:
                 diff = (event.start_time - now).total_seconds()
 
-                # 30 minute warning
                 if 1740 <= diff <= 1800 and event.id not in warned_events:
                     try:
                         channel = bot.get_channel(CHANNEL_ID)
@@ -136,7 +146,6 @@ async def check_events():
                     except Exception as e:
                         print(f"Error sending 30 minute warning: {e}")
 
-                # Auto start event
                 if -60 <= diff <= 0:
                     try:
                         await event.start()
@@ -238,7 +247,7 @@ async def delete(ctx, *, args):
     scrim_channel = bot.get_channel(SCRIM_CHAT_ID)
     game_links_channel = bot.get_channel(GAME_LINKS_ID)
 
-    # Find active event (optional - continue even if not found)
+    # Find active event
     active_event = None
     try:
         events = await guild.fetch_scheduled_events()
@@ -249,7 +258,10 @@ async def delete(ctx, *, args):
     except Exception as e:
         await ctx.send(f"⚠️ Could not check for active event: `{e}` - continuing cleanup...")
 
-    # Remove roles only from members not signed up for other events
+    # Remove Active Scrim role from everyone
+    await remove_active_role_all(guild)
+
+    # Remove Scrim Player role only from members not signed up for other events
     try:
         data = load_data()
         if active_event:
@@ -398,13 +410,16 @@ async def event(ctx, *, args):
     parts = [p.strip() for p in args.split(" ", 1)]
     subcommand = parts[0].lower()
 
-    # r!event update
     if subcommand == "update":
-        await ctx.send("⏳ Checking voice channels and updating reactions...")
+        await ctx.send("⏳ Checking voice channels and assigning Active Scrim role...")
 
         guild = ctx.guild
-        role = guild.get_role(ROLE_ID)
+        active_role = guild.get_role(ACTIVE_ROLE_ID)
         register_channel = bot.get_channel(CHANNEL_ID)
+
+        if active_role is None:
+            await ctx.send("❌ Active Scrim role not found!")
+            return
 
         # Get all members currently in any voice channel
         members_in_voice = set()
@@ -416,35 +431,31 @@ async def event(ctx, *, args):
             await ctx.send("❌ No members found in any voice channel!")
             return
 
+        # Get all reacted users
         data = load_data()
         message_ids = get_all_message_ids(data)
         reacted_ids = await get_all_reacted_ids(register_channel, message_ids)
 
-        removed = []
+        # Remove Active Scrim role from everyone first
+        await remove_active_role_all(guild)
+
+        # Give Active Scrim role only to players in voice AND registered
+        assigned = []
         for user_id in reacted_ids:
-            if user_id not in members_in_voice:
+            if user_id in members_in_voice:
                 member = guild.get_member(user_id)
-                if member is None:
-                    continue
-                for msg_id in message_ids:
+                if member and not member.bot:
                     try:
-                        msg = await register_channel.fetch_message(msg_id)
-                        await msg.remove_reaction("✅", member)
-                    except Exception:
-                        pass
-                if role in member.roles:
-                    try:
-                        await member.remove_roles(role)
-                        removed.append(member.display_name)
-                    except Exception:
-                        pass
+                        await member.add_roles(active_role)
+                        assigned.append(member.display_name)
+                    except Exception as e:
+                        print(f"Error assigning active role to {member.display_name}: {e}")
 
-        if removed:
-            await ctx.send(f"✅ Update complete! Removed **{len(removed)}** player(s) not in voice:\n" + ", ".join(removed))
+        if assigned:
+            await ctx.send(f"✅ Update complete! Assigned **Active Scrim** to **{len(assigned)}** player(s) in voice:\n" + ", ".join(assigned))
         else:
-            await ctx.send("✅ Update complete! All signed up players are in voice.")
+            await ctx.send("✅ Update complete! No registered players found in voice.")
 
-    # r!event leaderboard
     elif subcommand == "leaderboard":
         await ctx.send("⏳ Scanning game links and updating leaderboard...")
 
