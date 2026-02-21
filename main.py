@@ -53,6 +53,23 @@ def save_leaderboard(data: dict):
         json.dump(data, f)
 
 
+async def clear_channel(channel):
+    try:
+        deleted = await channel.purge(limit=500)
+        print(f"{len(deleted)} messages deleted in {channel.name}")
+    except Exception:
+        try:
+            async for message in channel.history(limit=500):
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+            print(f"Channel {channel.name} cleared one by one")
+        except Exception as e:
+            print(f"Error clearing {channel.name}: {e}")
+            raise e
+
+
 async def get_all_reacted_ids(channel, message_ids: set) -> set:
     reacted_ids = set()
     for msg_id in list(message_ids):
@@ -279,19 +296,13 @@ async def delete(ctx, *, args):
 
     # Clear scrim chat
     try:
-        deleted = await scrim_channel.purge(limit=500)
-        print(f"{len(deleted)} messages deleted in scrim chat")
-    except discord.Forbidden:
-        await ctx.send("❌ I don't have permission to delete messages in the scrim chat!")
+        await clear_channel(scrim_channel)
     except Exception as e:
         await ctx.send(f"❌ Error clearing scrim chat: `{e}`")
 
     # Clear game links channel
     try:
-        deleted = await game_links_channel.purge(limit=500)
-        print(f"{len(deleted)} messages deleted in game links")
-    except discord.Forbidden:
-        await ctx.send("❌ I don't have permission to delete messages in game links!")
+        await clear_channel(game_links_channel)
     except Exception as e:
         await ctx.send(f"❌ Error clearing game links: `{e}`")
 
@@ -405,7 +416,6 @@ async def event(ctx, *, args):
             await ctx.send("❌ No members found in any voice channel!")
             return
 
-        # Get all reacted users
         data = load_data()
         message_ids = get_all_message_ids(data)
         reacted_ids = await get_all_reacted_ids(register_channel, message_ids)
@@ -416,14 +426,12 @@ async def event(ctx, *, args):
                 member = guild.get_member(user_id)
                 if member is None:
                     continue
-                # Remove reaction from all tracked messages
                 for msg_id in message_ids:
                     try:
                         msg = await register_channel.fetch_message(msg_id)
                         await msg.remove_reaction("✅", member)
                     except Exception:
                         pass
-                # Remove role
                 if role in member.roles:
                     try:
                         await member.remove_roles(role)
@@ -447,7 +455,6 @@ async def event(ctx, *, args):
         leaderboard = load_leaderboard()
         games_found = 0
 
-        # Scan game-links for winner messages
         async for message in game_links_channel.history(limit=200):
             content_lower = message.content.lower()
             if "winner" in content_lower and message.mentions:
@@ -463,10 +470,8 @@ async def event(ctx, *, args):
 
         save_leaderboard(leaderboard)
 
-        # Sort leaderboard by points
         sorted_lb = sorted(leaderboard.items(), key=lambda x: x[1], reverse=True)
 
-        # Build leaderboard embed
         medals = ["🥇", "🥈", "🥉"]
         description = ""
         for i, (user_id, points) in enumerate(sorted_lb):
@@ -486,7 +491,6 @@ async def event(ctx, *, args):
             color=discord.Color.gold()
         )
 
-        # Delete old leaderboard message and post new one
         try:
             async for old_msg in leaderboard_channel.history(limit=20):
                 if old_msg.author == bot.user:
