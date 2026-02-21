@@ -20,6 +20,7 @@ LEADERBOARD_CHANNEL_ID = 1466915479661842725
 
 IDS_FILE = "message_ids.json"
 LEADERBOARD_FILE = "leaderboard.json"
+STATS_FILE = "stats.json"
 
 warned_events = set()
 
@@ -52,6 +53,24 @@ def load_leaderboard() -> dict:
 def save_leaderboard(data: dict):
     with open(LEADERBOARD_FILE, "w") as f:
         json.dump(data, f)
+
+
+def load_stats() -> dict:
+    if os.path.exists(STATS_FILE):
+        with open(STATS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_stats(data: dict):
+    with open(STATS_FILE, "w") as f:
+        json.dump(data, f)
+
+
+def get_or_create_stats(stats: dict, user_id: str) -> dict:
+    if user_id not in stats:
+        stats[user_id] = {"registered": 0, "attended": 0}
+    return stats[user_id]
 
 
 async def clear_channel(channel):
@@ -247,7 +266,6 @@ async def delete(ctx, *, args):
     scrim_channel = bot.get_channel(SCRIM_CHAT_ID)
     game_links_channel = bot.get_channel(GAME_LINKS_ID)
 
-    # Find active event
     active_event = None
     try:
         events = await guild.fetch_scheduled_events()
@@ -258,10 +276,8 @@ async def delete(ctx, *, args):
     except Exception as e:
         await ctx.send(f"⚠️ Could not check for active event: `{e}` - continuing cleanup...")
 
-    # Remove Active Scrim role from everyone
     await remove_active_role_all(guild)
 
-    # Remove Scrim Player role only from members not signed up for other events
     try:
         data = load_data()
         if active_event:
@@ -279,7 +295,6 @@ async def delete(ctx, *, args):
         await ctx.send(f"❌ Error syncing roles: `{e}`")
         return
 
-    # Delete only the message of the active event
     try:
         data = load_data()
         if active_event:
@@ -306,19 +321,16 @@ async def delete(ctx, *, args):
         await ctx.send(f"❌ Error deleting register messages: `{e}`")
         return
 
-    # Clear scrim chat
     try:
         await clear_channel(scrim_channel)
     except Exception as e:
         await ctx.send(f"❌ Error clearing scrim chat: `{e}`")
 
-    # Clear game links channel
     try:
         await clear_channel(game_links_channel)
     except Exception as e:
         await ctx.send(f"❌ Error clearing game links: `{e}`")
 
-    # End active event if found
     if active_event:
         try:
             await active_event.end()
@@ -421,7 +433,6 @@ async def event(ctx, *, args):
             await ctx.send("❌ Active Scrim role not found!")
             return
 
-        # Get all members currently in any voice channel
         members_in_voice = set()
         for vc in guild.voice_channels:
             for member in vc.members:
@@ -431,15 +442,22 @@ async def event(ctx, *, args):
             await ctx.send("❌ No members found in any voice channel!")
             return
 
-        # Get all reacted users
         data = load_data()
         message_ids = get_all_message_ids(data)
         reacted_ids = await get_all_reacted_ids(register_channel, message_ids)
 
-        # Remove Active Scrim role from everyone first
+        # Track attendance in stats
+        stats = load_stats()
+        for user_id in reacted_ids:
+            uid_str = str(user_id)
+            user_stats = get_or_create_stats(stats, uid_str)
+            user_stats["registered"] += 1
+            if user_id in members_in_voice:
+                user_stats["attended"] += 1
+        save_stats(stats)
+
         await remove_active_role_all(guild)
 
-        # Give Active Scrim role only to players in voice AND registered
         assigned = []
         for user_id in reacted_ids:
             if user_id in members_in_voice:
@@ -517,6 +535,74 @@ async def event(ctx, *, args):
 
     else:
         await ctx.send("❌ Unknown subcommand! Available: `r!event update`, `r!event leaderboard`")
+
+
+@bot.command()
+async def stats(ctx, *, args=None):
+    guild = ctx.guild
+    stats = load_stats()
+    leaderboard = load_leaderboard()
+
+    # r!stats top
+    if args and args.strip().lower() == "top":
+        if not stats:
+            await ctx.send("❌ No stats available yet!")
+            return
+
+        # Sort by attendance rate
+        sorted_stats = []
+        for uid, s in stats.items():
+            rate = (s["attended"] / s["registered"] * 100) if s["registered"] > 0 else 0
+            sorted_stats.append((uid, s, rate))
+        sorted_stats.sort(key=lambda x: x[2], reverse=True)
+
+        description = ""
+        for i, (uid, s, rate) in enumerate(sorted_stats[:10]):
+            member = guild.get_member(int(uid))
+            name = member.display_name if member else f"<@{uid}>"
+            points = leaderboard.get(uid, 0)
+            description += f"**{i+1}.** {name} — {rate:.0f}% attendance ({s['attended']}/{s['registered']}) | {points} pts\n"
+
+        embed = discord.Embed(
+            title="🏅 Top 10 - Attendance Rate",
+            description=description,
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    # r!stats @spieler or r!stats (own)
+    if ctx.message.mentions:
+        target = ctx.message.mentions[0]
+    else:
+        target = ctx.author
+
+    uid_str = str(target.id)
+    user_stats = stats.get(uid_str, {"registered": 0, "attended": 0})
+    points = leaderboard.get(uid_str, 0)
+
+    registered = user_stats["registered"]
+    attended = user_stats["attended"]
+    rate = (attended / registered * 100) if registered > 0 else 0
+
+    if rate >= 80:
+        rate_emoji = "🟢"
+    elif rate >= 50:
+        rate_emoji = "🟡"
+    else:
+        rate_emoji = "🔴"
+
+    embed = discord.Embed(
+        title=f"📊 Stats - {target.display_name}",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="🏆 Points", value=str(points), inline=True)
+    embed.add_field(name="📋 Registered", value=str(registered), inline=True)
+    embed.add_field(name="✅ Attended", value=str(attended), inline=True)
+    embed.add_field(name=f"{rate_emoji} Attendance Rate", value=f"{rate:.0f}%", inline=True)
+    embed.set_thumbnail(url=target.display_avatar.url)
+
+    await ctx.send(embed=embed)
 
 
 @bot.event
