@@ -14,8 +14,13 @@ ROLE_ID = 1466913367380726004
 MENTION_ROLES = [1467057562108039250, 1467057940409352377]
 SCRIM_CHAT_ID = 1466915521420329204
 EVENT_CHANNEL_ID = 1467091170176929968
+GAME_LINKS_ID = 1466911935395266641
+LEADERBOARD_CHANNEL_ID = 1466915479661842725
 
 IDS_FILE = "message_ids.json"
+LEADERBOARD_FILE = "leaderboard.json"
+
+warned_events = set()
 
 bot = commands.Bot(command_prefix="r!", intents=intents)
 
@@ -34,6 +39,18 @@ def save_data(data: dict):
 
 def get_all_message_ids(data: dict) -> set:
     return set(data.values())
+
+
+def load_leaderboard() -> dict:
+    if os.path.exists(LEADERBOARD_FILE):
+        with open(LEADERBOARD_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_leaderboard(data: dict):
+    with open(LEADERBOARD_FILE, "w") as f:
+        json.dump(data, f)
 
 
 async def get_all_reacted_ids(channel, message_ids: set) -> set:
@@ -84,6 +101,25 @@ async def check_events():
         for event in events:
             if event.status == discord.EventStatus.scheduled:
                 diff = (event.start_time - now).total_seconds()
+
+                # 30 minute warning
+                if 1740 <= diff <= 1800 and event.id not in warned_events:
+                    try:
+                        channel = bot.get_channel(CHANNEL_ID)
+                        role = guild.get_role(ROLE_ID)
+                        event_link = f"https://discord.com/events/{guild.id}/{event.id}"
+                        embed = discord.Embed(
+                            title=f"⏰ {event.name} starts in 30 minutes!",
+                            description=f"Get ready! The event **{event.name}** starts in 30 minutes.\n[View Event]({event_link})",
+                            color=discord.Color.yellow()
+                        )
+                        await channel.send(content=f"{role.mention}", embed=embed)
+                        warned_events.add(event.id)
+                        print(f"30 minute warning sent for {event.name}")
+                    except Exception as e:
+                        print(f"Error sending 30 minute warning: {e}")
+
+                # Auto start event
                 if -60 <= diff <= 0:
                     try:
                         await event.start()
@@ -183,8 +219,9 @@ async def delete(ctx, *, args):
     role = guild.get_role(ROLE_ID)
     register_channel = bot.get_channel(CHANNEL_ID)
     scrim_channel = bot.get_channel(SCRIM_CHAT_ID)
+    game_links_channel = bot.get_channel(GAME_LINKS_ID)
 
-    # Find active event
+    # Find active event (optional - continue even if not found)
     active_event = None
     try:
         events = await guild.fetch_scheduled_events()
@@ -193,19 +230,15 @@ async def delete(ctx, *, args):
                 active_event = event
                 break
     except Exception as e:
-        await ctx.send(f"❌ Error finding active event: `{e}`")
-        return
-
-    if active_event is None:
-        await ctx.send("❌ No active event found!")
-        return
+        await ctx.send(f"⚠️ Could not check for active event: `{e}` - continuing cleanup...")
 
     # Remove roles only from members not signed up for other events
     try:
         data = load_data()
-        event_id_str = str(active_event.id)
-        if event_id_str in data:
-            del data[event_id_str]
+        if active_event:
+            event_id_str = str(active_event.id)
+            if event_id_str in data:
+                del data[event_id_str]
         remaining_message_ids = get_all_message_ids(data)
         reacted_ids = await get_all_reacted_ids(register_channel, remaining_message_ids)
         await sync_roles(guild, role, reacted_ids)
@@ -220,16 +253,17 @@ async def delete(ctx, *, args):
     # Delete only the message of the active event
     try:
         data = load_data()
-        event_id_str = str(active_event.id)
-        if event_id_str in data:
-            msg_id = data[event_id_str]
-            try:
-                msg = await register_channel.fetch_message(msg_id)
-                await msg.delete()
-            except discord.NotFound:
-                pass
-            del data[event_id_str]
-            save_data(data)
+        if active_event:
+            event_id_str = str(active_event.id)
+            if event_id_str in data:
+                msg_id = data[event_id_str]
+                try:
+                    msg = await register_channel.fetch_message(msg_id)
+                    await msg.delete()
+                except discord.NotFound:
+                    pass
+                del data[event_id_str]
+                save_data(data)
 
         remaining_message_ids = get_all_message_ids(data)
         async for message in register_channel.history(limit=100):
@@ -249,20 +283,27 @@ async def delete(ctx, *, args):
         print(f"{len(deleted)} messages deleted in scrim chat")
     except discord.Forbidden:
         await ctx.send("❌ I don't have permission to delete messages in the scrim chat!")
-        return
     except Exception as e:
         await ctx.send(f"❌ Error clearing scrim chat: `{e}`")
-        return
 
-    # End active event
+    # Clear game links channel
     try:
-        await active_event.end()
-        print("Event ended")
+        deleted = await game_links_channel.purge(limit=500)
+        print(f"{len(deleted)} messages deleted in game links")
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to delete messages in game links!")
     except Exception as e:
-        await ctx.send(f"⚠️ Messages and roles deleted but event could not be ended: `{e}`")
-        return
+        await ctx.send(f"❌ Error clearing game links: `{e}`")
 
-    await ctx.send("✅ Event successfully ended!\n- 🗑️ Messages deleted\n- 👥 Roles updated\n- 🧹 Scrim chat cleared")
+    # End active event if found
+    if active_event:
+        try:
+            await active_event.end()
+            print("Event ended")
+        except Exception as e:
+            await ctx.send(f"⚠️ Could not end event: `{e}`")
+
+    await ctx.send("✅ Cleanup complete!\n- 🗑️ Messages deleted\n- 👥 Roles updated\n- 🧹 Scrim chat cleared\n- 🔗 Game links cleared")
 
 
 @bot.command()
@@ -284,7 +325,6 @@ async def cancel(ctx, *, args):
     role = guild.get_role(ROLE_ID)
     register_channel = bot.get_channel(CHANNEL_ID)
 
-    # Find the scheduled event
     target_event = None
     try:
         events = await guild.fetch_scheduled_events()
@@ -304,7 +344,6 @@ async def cancel(ctx, *, args):
         await ctx.send("❌ This event is already active! Use `r!delete event` instead.")
         return
 
-    # Cancel the event
     try:
         await target_event.cancel()
         print(f"Event {target_event.name} cancelled!")
@@ -312,7 +351,6 @@ async def cancel(ctx, *, args):
         await ctx.send(f"❌ Error cancelling event: `{e}`")
         return
 
-    # Delete the event's message and update data
     try:
         data = load_data()
         event_id_str = str(event_id)
@@ -332,7 +370,6 @@ async def cancel(ctx, *, args):
         await ctx.send(f"❌ Event cancelled but error deleting message: `{e}`")
         return
 
-    # Sync roles - remove from members not in any remaining event
     try:
         remaining_message_ids = get_all_message_ids(data)
         reacted_ids = await get_all_reacted_ids(register_channel, remaining_message_ids)
@@ -343,6 +380,128 @@ async def cancel(ctx, *, args):
         return
 
     await ctx.send(f"✅ Event **{target_event.name}** has been cancelled!\n- 🗑️ Message deleted\n- 👥 Roles updated")
+
+
+@bot.command()
+async def event(ctx, *, args):
+    parts = [p.strip() for p in args.split(" ", 1)]
+    subcommand = parts[0].lower()
+
+    # r!event update
+    if subcommand == "update":
+        await ctx.send("⏳ Checking voice channels and updating reactions...")
+
+        guild = ctx.guild
+        role = guild.get_role(ROLE_ID)
+        register_channel = bot.get_channel(CHANNEL_ID)
+
+        # Get all members currently in any voice channel
+        members_in_voice = set()
+        for vc in guild.voice_channels:
+            for member in vc.members:
+                members_in_voice.add(member.id)
+
+        if not members_in_voice:
+            await ctx.send("❌ No members found in any voice channel!")
+            return
+
+        # Get all reacted users
+        data = load_data()
+        message_ids = get_all_message_ids(data)
+        reacted_ids = await get_all_reacted_ids(register_channel, message_ids)
+
+        removed = []
+        for user_id in reacted_ids:
+            if user_id not in members_in_voice:
+                member = guild.get_member(user_id)
+                if member is None:
+                    continue
+                # Remove reaction from all tracked messages
+                for msg_id in message_ids:
+                    try:
+                        msg = await register_channel.fetch_message(msg_id)
+                        await msg.remove_reaction("✅", member)
+                    except Exception:
+                        pass
+                # Remove role
+                if role in member.roles:
+                    try:
+                        await member.remove_roles(role)
+                        removed.append(member.display_name)
+                    except Exception:
+                        pass
+
+        if removed:
+            await ctx.send(f"✅ Update complete! Removed **{len(removed)}** player(s) not in voice:\n" + ", ".join(removed))
+        else:
+            await ctx.send("✅ Update complete! All signed up players are in voice.")
+
+    # r!event leaderboard
+    elif subcommand == "leaderboard":
+        await ctx.send("⏳ Scanning game links and updating leaderboard...")
+
+        guild = ctx.guild
+        game_links_channel = bot.get_channel(GAME_LINKS_ID)
+        leaderboard_channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+
+        leaderboard = load_leaderboard()
+        games_found = 0
+
+        # Scan game-links for winner messages
+        async for message in game_links_channel.history(limit=200):
+            content_lower = message.content.lower()
+            if "winner" in content_lower and message.mentions:
+                for member in message.mentions:
+                    if not member.bot:
+                        uid = str(member.id)
+                        leaderboard[uid] = leaderboard.get(uid, 0) + 1
+                games_found += 1
+
+        if games_found == 0:
+            await ctx.send("❌ No winner messages found in game-links channel!")
+            return
+
+        save_leaderboard(leaderboard)
+
+        # Sort leaderboard by points
+        sorted_lb = sorted(leaderboard.items(), key=lambda x: x[1], reverse=True)
+
+        # Build leaderboard embed
+        medals = ["🥇", "🥈", "🥉"]
+        description = ""
+        for i, (user_id, points) in enumerate(sorted_lb):
+            member = guild.get_member(int(user_id))
+            name = member.mention if member else f"<@{user_id}>"
+            if i < 3:
+                prefix = medals[i]
+            elif points >= 3:
+                prefix = "🏅"
+            else:
+                prefix = "▪️"
+            description += f"{prefix} {name} **{points} Point{'s' if points != 1 else ''}**\n"
+
+        embed = discord.Embed(
+            title="Scrim - Leaderboard 🏆",
+            description=description,
+            color=discord.Color.gold()
+        )
+
+        # Delete old leaderboard message and post new one
+        try:
+            async for old_msg in leaderboard_channel.history(limit=20):
+                if old_msg.author == bot.user:
+                    await old_msg.delete()
+        except Exception as e:
+            await ctx.send(f"⚠️ Could not delete old leaderboard: `{e}`")
+
+        scrim_news_role = guild.get_role(MENTION_ROLES[1])
+        mention_content = scrim_news_role.mention if scrim_news_role else ""
+
+        await leaderboard_channel.send(content=mention_content, embed=embed)
+        await ctx.send(f"✅ Leaderboard updated! Found **{games_found}** game(s) with winners.")
+
+    else:
+        await ctx.send("❌ Unknown subcommand! Available: `r!event update`, `r!event leaderboard`")
 
 
 @bot.event
