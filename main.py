@@ -25,7 +25,7 @@ SPECTATOR_ROLE_ID      = 1475139183147225240   # Spectator Scrim role (player is
 MENTION_ROLES          = [1467057562108039250, 1467057940409352377]  # Roles pinged on event creation
 SCRIM_CHAT_ID          = 1466915521420329204   # Scrim chat channel (cleared on r!delete event)
 EVENT_CHANNEL_ID       = 1467091170176929968   # Meeting Point voice channel (linked to Discord event)
-GAME_LINKS_ID          = 1466911935395266641   # Game-links channel (winner messages for leaderboard)
+GAME_LINKS_ID          = 1466911935395266641   # Game-links channel (winner messages tracked here)
 LEADERBOARD_CHANNEL_ID = 1466915479661842725   # Channel where the leaderboard embed is posted
 
 
@@ -33,17 +33,19 @@ LEADERBOARD_CHANNEL_ID = 1466915479661842725   # Channel where the leaderboard e
 # JSON files used for persistent storage between bot restarts.
 
 IDS_FILE         = "message_ids.json"   # Maps event ID → registration message ID
-LEADERBOARD_FILE = "leaderboard.json"   # Maps user ID → win count
-STATS_FILE       = "stats.json"         # Maps user ID → {registered, attended}
+LEADERBOARD_FILE = "leaderboard.json"   # Maps user ID → win count (legacy, kept for leaderboard cmd)
+STATS_FILE       = "stats.json"         # Maps user ID → full stats dict
 
 
 # ─── Runtime State ────────────────────────────────────────────────────────────
 # In-memory variables that track the current session.
 # These reset on bot restart – they do NOT persist to disk.
 
-warned_events     = set()   # Event IDs that already received the 30-minute warning
-scrim_active      = False   # True once r!event update is used; activates the auto VC check loop
-manually_deleting = False   # True while r!delete event is running; prevents auto event restart
+warned_events            = set()   # Event IDs that already received the 30-minute warning
+scrim_active             = False   # True once r!event update is used; activates the auto VC check loop
+manually_deleting        = False   # True while r!delete event is running; prevents auto event restart
+current_game_participants = set()  # User IDs who had Active Scrim role since the last r!event update
+                                   # Everyone in this set counts as "has played" when a game is logged
 
 
 # ─── Bot Initialization ───────────────────────────────────────────────────────
@@ -89,7 +91,7 @@ def save_leaderboard(data: dict):
 
 
 def load_stats() -> dict:
-    """Load stats.json → {user_id: {registered, attended}}. Returns {} if file doesn't exist."""
+    """Load stats.json → {user_id: stats_dict}. Returns {} if file doesn't exist."""
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, "r") as f:
             return json.load(f)
@@ -103,9 +105,30 @@ def save_stats(data: dict):
 
 
 def get_or_create_stats(stats: dict, user_id: str) -> dict:
-    """Return the stats entry for a user, creating a default one if it doesn't exist yet."""
+    """
+    Return the stats entry for a user, creating a full default entry if it doesn't exist.
+    Fields:
+      registered    – how many times r!event update was run while they had ✅
+      attended      – how many times they were in a VC during r!event update
+      games_played  – total games counted while they had Active Scrim role
+      games_won     – total games where they were listed as winner
+      win_streak    – current consecutive win streak
+      best_streak   – personal best consecutive win streak
+    """
     if user_id not in stats:
-        stats[user_id] = {"registered": 0, "attended": 0}
+        stats[user_id] = {
+            "registered":   0,
+            "attended":     0,
+            "games_played": 0,
+            "games_won":    0,
+            "win_streak":   0,
+            "best_streak":  0,
+        }
+    else:
+        # Migrate older entries that are missing the new game-tracking fields
+        for field in ("games_played", "games_won", "win_streak", "best_streak"):
+            if field not in stats[user_id]:
+                stats[user_id][field] = 0
     return stats[user_id]
 
 
@@ -191,6 +214,7 @@ async def remove_spectator_role_all(guild):
 
 # ─── Scrim VC Role Logic ──────────────────────────────────────────────────────
 # Core function that decides who gets Active Scrim vs Spectator based on their VC.
+# Also updates current_game_participants so game tracking always knows who is playing.
 # Called both manually (r!event update) and automatically every minute (scrim_vc_check).
 
 async def update_scrim_vc_roles(guild):
@@ -199,8 +223,12 @@ async def update_scrim_vc_roles(guild):
       - Meeting Point (EVENT_CHANNEL_ID) → Spectator Scrim role (remove Active)
       - Any other voice channel          → Active Scrim role    (remove Spectator)
       - Not in any voice channel         → both roles removed
-    This allows the bot to track who is currently playing vs. waiting/spectating.
+
+    Additionally adds everyone who receives Active Scrim to current_game_participants
+    so that games can be attributed to everyone who played since the last r!event update.
     """
+    global current_game_participants
+
     active_role    = guild.get_role(ACTIVE_ROLE_ID)
     spectator_role = guild.get_role(SPECTATOR_ROLE_ID)
 
@@ -221,6 +249,9 @@ async def update_scrim_vc_roles(guild):
                 members_in_other_vc.add(member.id)
 
     all_in_vc = members_in_meeting_point | members_in_other_vc
+
+    # Add current game-VC players to the participant pool for this scrim session
+    current_game_participants |= members_in_other_vc
 
     # Meeting Point → Spectator role, remove Active
     for member_id in members_in_meeting_point:
@@ -269,8 +300,65 @@ async def update_scrim_vc_roles(guild):
 
     print(
         f"[scrim_vc_check] Meeting Point: {len(members_in_meeting_point)} spectators | "
-        f"Other VCs: {len(members_in_other_vc)} active players"
+        f"Other VCs: {len(members_in_other_vc)} active players | "
+        f"Participant pool: {len(current_game_participants)}"
     )
+
+
+# ─── Game Logging Helper ──────────────────────────────────────────────────────
+# Central function for recording a game result.
+# Called by both r!game winner and the on_message auto-detection.
+
+async def log_game(guild, winner_ids: set, source: str = "manual"):
+    """
+    Records a completed game:
+      - Gives games_played +1 to everyone in current_game_participants
+      - Gives games_won +1 and updates win_streak/best_streak for each winner
+      - Resets win_streak to 0 for participants who did NOT win
+      - Also updates the legacy leaderboard.json for r!event leaderboard compatibility
+
+    Parameters:
+      guild       – the Discord guild object
+      winner_ids  – set of user IDs that won this game
+      source      – "manual" (r!game winner) or "auto" (game-links message)
+    """
+    if not current_game_participants:
+        print(f"[log_game] No participants tracked yet, skipping ({source})")
+        return None
+
+    stats      = load_stats()
+    leaderboard = load_leaderboard()
+
+    for user_id in current_game_participants:
+        uid_str    = str(user_id)
+        user_stats = get_or_create_stats(stats, uid_str)
+        user_stats["games_played"] += 1
+
+        if user_id in winner_ids:
+            user_stats["games_won"]   += 1
+            user_stats["win_streak"]  += 1
+            if user_stats["win_streak"] > user_stats["best_streak"]:
+                user_stats["best_streak"] = user_stats["win_streak"]
+            # Also update legacy leaderboard
+            leaderboard[uid_str] = leaderboard.get(uid_str, 0) + 1
+        else:
+            user_stats["win_streak"] = 0  # Loss or no-show breaks the streak
+
+    save_stats(stats)
+    save_leaderboard(leaderboard)
+
+    winner_names = []
+    for uid in winner_ids:
+        member = guild.get_member(uid)
+        if member:
+            winner_names.append(member.display_name)
+
+    print(
+        f"[log_game] Game logged ({source}) | "
+        f"Participants: {len(current_game_participants)} | "
+        f"Winners: {', '.join(winner_names) or 'none'}"
+    )
+    return winner_names
 
 
 # ─── Auto VC Check Task ───────────────────────────────────────────────────────
@@ -417,6 +505,119 @@ async def on_scheduled_event_update(before, after):
         print(f"Error restarting event: {e}")
 
 
+# ─── Auto Game Detection (on_message) ────────────────────────────────────────
+# Listens for messages posted in the game-links channel.
+# If a message contains "winner" and at least one user mention, it is treated as a
+# game result and logged automatically – no command needed.
+# Format example: "winner @PlayerA @PlayerB"
+
+@bot.event
+async def on_message(message):
+    # Always process commands first so other commands still work
+    await bot.process_commands(message)
+
+    # Only react to messages in the game-links channel, not from the bot itself
+    if message.channel.id != GAME_LINKS_ID or message.author.bot:
+        return
+
+    content_lower = message.content.lower()
+    if "winner" not in content_lower:
+        return
+
+    winner_ids = {m.id for m in message.mentions if not m.bot}
+    if not winner_ids:
+        return
+
+    if not scrim_active:
+        return  # Only track games during an active scrim session
+
+    winner_names = await log_game(message.guild, winner_ids, source="auto")
+    if winner_names is not None:
+        await message.add_reaction("✅")  # Confirm the game was recorded
+        print(f"[auto] Game recorded from game-links post by {message.author.display_name}")
+
+
+# ─── Command: r!game winner @player1 @player2 ... ────────────────────────────
+# Manually logs a game result. Mention all players who won.
+# All current_game_participants count as having played.
+# Usage: r!game winner @PlayerA @PlayerB
+
+@bot.command()
+async def game(ctx, subcommand: str = None, *, args=None):
+    global current_game_participants
+
+    if subcommand is None or subcommand.lower() != "winner":
+        await ctx.send(
+            "❌ Wrong format!\n"
+            "Use: `r!game winner @Player1 @Player2 ...`\n"
+            "Mention all players who **won** the game."
+        )
+        return
+
+    if not scrim_active:
+        await ctx.send("❌ No active scrim session! Use `r!event update` first.")
+        return
+
+    winner_ids = {m.id for m in ctx.message.mentions if not m.bot}
+    if not winner_ids:
+        await ctx.send("❌ Please mention at least one winner!")
+        return
+
+    if not current_game_participants:
+        await ctx.send("❌ No participants tracked yet! Make sure `r!event update` was used and players are in VCs.")
+        return
+
+    winner_names = await log_game(ctx.guild, winner_ids, source="manual")
+
+    if winner_names is None:
+        await ctx.send("⚠️ Game could not be logged, no participants tracked.")
+        return
+
+    stats = load_stats()
+    loser_names = []
+    for uid in current_game_participants:
+        if uid not in winner_ids:
+            member = ctx.guild.get_member(uid)
+            if member:
+                loser_names.append(member.display_name)
+
+    embed = discord.Embed(
+        title="🎮 Game Logged!",
+        color=discord.Color.green()
+    )
+    embed.add_field(
+        name="🏆 Winners",
+        value=", ".join(winner_names) if winner_names else "—",
+        inline=False
+    )
+    embed.add_field(
+        name="❌ Losses recorded for",
+        value=", ".join(loser_names) if loser_names else "—",
+        inline=False
+    )
+    embed.add_field(
+        name="👥 Total participants",
+        value=str(len(current_game_participants)),
+        inline=True
+    )
+
+    # Show updated streaks for winners
+    streak_lines = []
+    for uid in winner_ids:
+        member = ctx.guild.get_member(uid)
+        if member:
+            uid_str    = str(uid)
+            user_stats = stats.get(uid_str, {})
+            streak     = user_stats.get("win_streak", 0)
+            best       = user_stats.get("best_streak", 0)
+            fire       = " 🔥" if streak >= 3 else ""
+            streak_lines.append(f"{member.display_name}: {streak} streak{fire} (best: {best})")
+    if streak_lines:
+        embed.add_field(name="📈 Win Streaks", value="\n".join(streak_lines), inline=False)
+
+    await ctx.send(embed=embed)
+
+
 # ─── Command: r!create ────────────────────────────────────────────────────────
 # Creates a new Discord scheduled event and posts a registration message with ✅ reaction.
 # Usage: r!create Title, Description, <t:TIMESTAMP:R>
@@ -490,19 +691,21 @@ async def create(ctx, *, args):
 # ─── Command: r!delete event ─────────────────────────────────────────────────
 # Ends the active Discord event, removes Active/Spectator roles, deletes registration
 # messages, and clears the scrim chat and game-links channel.
+# Also resets the game participant pool for the next scrim session.
 # Usage: r!delete event
 
 @bot.command()
 async def delete(ctx, *, args):
-    global manually_deleting, scrim_active
+    global manually_deleting, scrim_active, current_game_participants
 
     if args.strip().lower() != "event":
         await ctx.send("❌ Wrong format! Use: `r!delete event`")
         return
 
     # Set flags before doing anything so the auto-restart guard doesn't fire
-    manually_deleting = True
-    scrim_active      = False
+    manually_deleting        = True
+    scrim_active             = False
+    current_game_participants = set()  # Reset participant pool for next session
 
     await ctx.send("⏳ Deleting event, messages and roles...")
 
@@ -683,6 +886,7 @@ async def cancel(ctx, *, args):
 # ─── Command: r!event update ─────────────────────────────────────────────────
 # Scans all voice channels, assigns Active/Spectator roles, and starts the 1-minute
 # auto-check loop so roles stay updated for the rest of the scrim session.
+# Also resets current_game_participants so each update starts a fresh game tracking pool.
 # Also records attendance stats for registered players.
 #
 # ─── Command: r!event leaderboard ────────────────────────────────────────────
@@ -691,7 +895,7 @@ async def cancel(ctx, *, args):
 
 @bot.command()
 async def event(ctx, *, args):
-    global scrim_active
+    global scrim_active, current_game_participants
 
     parts      = [p.strip() for p in args.split(" ", 1)]
     subcommand = parts[0].lower()
@@ -710,6 +914,9 @@ async def event(ctx, *, args):
         if spectator_role is None:
             await ctx.send("❌ Spectator Scrim role not found!")
             return
+
+        # Reset participant pool so this update starts a clean tracking window
+        current_game_participants = set()
 
         # Collect which members are where
         members_in_meeting_point = set()
@@ -739,6 +946,7 @@ async def event(ctx, *, args):
         save_stats(stats)
 
         # Assign Active / Spectator roles based on current VC positions
+        # (also populates current_game_participants with players in game VCs)
         await update_scrim_vc_roles(guild)
 
         # Activate the per-minute auto-check for the rest of the scrim
@@ -833,7 +1041,7 @@ async def event(ctx, *, args):
 
 
 # ─── Command: r!stats ────────────────────────────────────────────────────────
-# Shows attendance and win stats for a player.
+# Shows full stats for a player including game tracking fields.
 # Usage:
 #   r!stats           → own stats
 #   r!stats @player   → stats for another player
@@ -852,16 +1060,24 @@ async def stats(ctx, *, args=None):
 
         sorted_stats = []
         for uid, s in stats.items():
-            rate = (s["attended"] / s["registered"] * 100) if s["registered"] > 0 else 0
+            rate = (s["attended"] / s["registered"] * 100) if s.get("registered", 0) > 0 else 0
             sorted_stats.append((uid, s, rate))
         sorted_stats.sort(key=lambda x: x[2], reverse=True)
 
         description = ""
         for i, (uid, s, rate) in enumerate(sorted_stats[:10]):
-            member = guild.get_member(int(uid))
-            name   = member.display_name if member else f"<@{uid}>"
-            points = leaderboard.get(uid, 0)
-            description += f"**{i+1}.** {name} — {rate:.0f}% attendance ({s['attended']}/{s['registered']}) | {points} pts\n"
+            member       = guild.get_member(int(uid))
+            name         = member.display_name if member else f"<@{uid}>"
+            points       = leaderboard.get(uid, 0)
+            games_played = s.get("games_played", 0)
+            games_won    = s.get("games_won", 0)
+            winrate      = (games_won / games_played * 100) if games_played > 0 else 0
+            description += (
+                f"**{i+1}.** {name} — "
+                f"{rate:.0f}% attendance ({s.get('attended',0)}/{s.get('registered',0)}) | "
+                f"{winrate:.0f}% WR ({games_won}W/{games_played - games_won}L) | "
+                f"{points} pts\n"
+            )
 
         embed = discord.Embed(
             title="🏅 Top 10 - Attendance Rate",
@@ -878,25 +1094,46 @@ async def stats(ctx, *, args=None):
         target = ctx.author
 
     uid_str    = str(target.id)
-    user_stats = stats.get(uid_str, {"registered": 0, "attended": 0})
+    user_stats = stats.get(uid_str, {})
     points     = leaderboard.get(uid_str, 0)
 
-    registered = user_stats["registered"]
-    attended   = user_stats["attended"]
-    rate       = (attended / registered * 100) if registered > 0 else 0
+    registered   = user_stats.get("registered", 0)
+    attended     = user_stats.get("attended", 0)
+    games_played = user_stats.get("games_played", 0)
+    games_won    = user_stats.get("games_won", 0)
+    games_lost   = games_played - games_won
+    win_streak   = user_stats.get("win_streak", 0)
+    best_streak  = user_stats.get("best_streak", 0)
 
-    if rate >= 80:
-        rate_emoji = "🟢"
-    elif rate >= 50:
-        rate_emoji = "🟡"
+    attend_rate = (attended / registered * 100) if registered > 0 else 0
+    winrate     = (games_won / games_played * 100) if games_played > 0 else 0
+
+    if attend_rate >= 80:
+        attend_emoji = "🟢"
+    elif attend_rate >= 50:
+        attend_emoji = "🟡"
     else:
-        rate_emoji = "🔴"
+        attend_emoji = "🔴"
+
+    if winrate >= 60:
+        wr_emoji = "🟢"
+    elif winrate >= 40:
+        wr_emoji = "🟡"
+    else:
+        wr_emoji = "🔴"
+
+    streak_display = f"{win_streak} 🔥" if win_streak >= 3 else str(win_streak)
 
     embed = discord.Embed(title=f"📊 Stats - {target.display_name}", color=discord.Color.blue())
-    embed.add_field(name="🏆 Points",                  value=str(points),     inline=True)
-    embed.add_field(name="📋 Registered",               value=str(registered), inline=True)
-    embed.add_field(name="✅ Attended",                 value=str(attended),   inline=True)
-    embed.add_field(name=f"{rate_emoji} Attendance Rate", value=f"{rate:.0f}%", inline=True)
+    embed.add_field(name="🏆 Points",                       value=str(points),            inline=True)
+    embed.add_field(name="📋 Registered",                   value=str(registered),        inline=True)
+    embed.add_field(name=f"{attend_emoji} Attendance Rate", value=f"{attend_rate:.0f}%",  inline=True)
+    embed.add_field(name="🎮 Games Played",                 value=str(games_played),      inline=True)
+    embed.add_field(name="✅ Games Won",                    value=str(games_won),         inline=True)
+    embed.add_field(name="❌ Games Lost",                   value=str(games_lost),        inline=True)
+    embed.add_field(name=f"{wr_emoji} Winrate",             value=f"{winrate:.0f}%",      inline=True)
+    embed.add_field(name="🔥 Current Streak",               value=streak_display,         inline=True)
+    embed.add_field(name="⭐ Best Streak",                  value=str(best_streak),       inline=True)
     embed.set_thumbnail(url=target.display_avatar.url)
 
     await ctx.send(embed=embed)
