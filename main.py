@@ -617,6 +617,39 @@ async def game(ctx, subcommand: str = None, *, args=None):
 
     await ctx.send(embed=embed)
 
+    # Post a winner announcement in the game-links channel
+    game_links_channel = bot.get_channel(GAME_LINKS_ID)
+    if game_links_channel:
+        winner_mentions = " ".join(f"<@{uid}>" for uid in winner_ids)
+        total_games = load_stats().get(str(next(iter(winner_ids))), {}).get("games_won", "?")
+        streak_parts = []
+        for uid in winner_ids:
+            uid_str    = str(uid)
+            user_stats = load_stats().get(uid_str, {})
+            streak     = user_stats.get("win_streak", 0)
+            fire       = " 🔥" if streak >= 3 else ""
+            member     = ctx.guild.get_member(uid)
+            if member:
+                streak_parts.append(f"{member.display_name} ({streak} streak{fire})")
+
+        announcement = discord.Embed(
+            title="🏆 Game Result",
+            color=discord.Color.gold()
+        )
+        announcement.add_field(
+            name="Winners",
+            value=winner_mentions,
+            inline=False
+        )
+        if streak_parts:
+            announcement.add_field(
+                name="📈 Current Streaks",
+                value="\n".join(streak_parts),
+                inline=False
+            )
+        announcement.set_footer(text=f"Logged by {ctx.author.display_name}")
+        await game_links_channel.send(embed=announcement)
+
 
 # ─── Command: r!create ────────────────────────────────────────────────────────
 # Creates a new Discord scheduled event and posts a registration message with ✅ reaction.
