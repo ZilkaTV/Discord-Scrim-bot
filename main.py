@@ -12,9 +12,10 @@ intents.members = True
 CHANNEL_ID = 1466912142530969650
 ROLE_ID = 1466913367380726004
 ACTIVE_ROLE_ID = 1474720238695219220
+SPECTATOR_ROLE_ID = 1475139183147225240          # NEW: Spectator Scrim role
 MENTION_ROLES = [1467057562108039250, 1467057940409352377]
 SCRIM_CHAT_ID = 1466915521420329204
-EVENT_CHANNEL_ID = 1467091170176929968
+EVENT_CHANNEL_ID = 1467091170176929968           # Meeting Point channel
 GAME_LINKS_ID = 1466911935395266641
 LEADERBOARD_CHANNEL_ID = 1466915479661842725
 
@@ -23,9 +24,13 @@ LEADERBOARD_FILE = "leaderboard.json"
 STATS_FILE = "stats.json"
 
 warned_events = set()
+scrim_active = False        # NEW: True once r!event update was used
+manually_deleting = False   # NEW: True while r!delete event is running
 
 bot = commands.Bot(command_prefix="r!", intents=intents)
 
+
+# ─── File helpers ────────────────────────────────────────────────────────────
 
 def load_data() -> dict:
     if os.path.exists(IDS_FILE):
@@ -72,6 +77,8 @@ def get_or_create_stats(stats: dict, user_id: str) -> dict:
         stats[user_id] = {"registered": 0, "attended": 0}
     return stats[user_id]
 
+
+# ─── Role / channel helpers ───────────────────────────────────────────────────
 
 async def clear_channel(channel):
     try:
@@ -126,6 +133,113 @@ async def remove_active_role_all(guild):
                 print(f"Error removing active role from {member.display_name}: {e}")
 
 
+async def remove_spectator_role_all(guild):
+    spectator_role = guild.get_role(SPECTATOR_ROLE_ID)
+    if spectator_role:
+        for member in list(spectator_role.members):
+            try:
+                await member.remove_roles(spectator_role)
+            except Exception as e:
+                print(f"Error removing spectator role from {member.display_name}: {e}")
+
+
+# ─── NEW: Core VC role update logic (used by both update command & auto-loop) ─
+
+async def update_scrim_vc_roles(guild):
+    """
+    - Members in Meeting Point (EVENT_CHANNEL_ID) → Spectator Scrim role
+    - Members in any other VC → Active Scrim role
+    - Members who left all VCs → both roles removed
+    """
+    active_role = guild.get_role(ACTIVE_ROLE_ID)
+    spectator_role = guild.get_role(SPECTATOR_ROLE_ID)
+
+    if not active_role or not spectator_role:
+        print("Active or Spectator role not found!")
+        return
+
+    members_in_meeting_point = set()
+    members_in_other_vc = set()
+
+    for vc in guild.voice_channels:
+        for member in vc.members:
+            if member.bot:
+                continue
+            if vc.id == EVENT_CHANNEL_ID:
+                members_in_meeting_point.add(member.id)
+            else:
+                members_in_other_vc.add(member.id)
+
+    all_in_vc = members_in_meeting_point | members_in_other_vc
+
+    # Meeting Point members → Spectator, no Active
+    for member_id in members_in_meeting_point:
+        member = guild.get_member(member_id)
+        if member:
+            if spectator_role not in member.roles:
+                try:
+                    await member.add_roles(spectator_role)
+                except Exception as e:
+                    print(f"Error adding spectator role to {member.display_name}: {e}")
+            if active_role in member.roles:
+                try:
+                    await member.remove_roles(active_role)
+                except Exception as e:
+                    print(f"Error removing active role from {member.display_name}: {e}")
+
+    # Other VC members → Active, no Spectator
+    for member_id in members_in_other_vc:
+        member = guild.get_member(member_id)
+        if member:
+            if active_role not in member.roles:
+                try:
+                    await member.add_roles(active_role)
+                except Exception as e:
+                    print(f"Error adding active role to {member.display_name}: {e}")
+            if spectator_role in member.roles:
+                try:
+                    await member.remove_roles(spectator_role)
+                except Exception as e:
+                    print(f"Error removing spectator role from {member.display_name}: {e}")
+
+    # Remove roles from anyone who left all VCs
+    for member in list(active_role.members):
+        if member.id not in all_in_vc:
+            try:
+                await member.remove_roles(active_role)
+            except Exception as e:
+                print(f"Error removing active role from {member.display_name}: {e}")
+
+    for member in list(spectator_role.members):
+        if member.id not in all_in_vc:
+            try:
+                await member.remove_roles(spectator_role)
+            except Exception as e:
+                print(f"Error removing spectator role from {member.display_name}: {e}")
+
+    print(
+        f"[scrim_vc_check] Meeting Point: {len(members_in_meeting_point)} spectators | "
+        f"Other VCs: {len(members_in_other_vc)} active players"
+    )
+
+
+# ─── NEW: Auto VC check task ──────────────────────────────────────────────────
+
+@tasks.loop(minutes=1)
+async def scrim_vc_check():
+    if not scrim_active:
+        return
+    for guild in bot.guilds:
+        await update_scrim_vc_roles(guild)
+
+
+@scrim_vc_check.before_loop
+async def before_scrim_vc_check():
+    await bot.wait_until_ready()
+
+
+# ─── Bot ready ────────────────────────────────────────────────────────────────
+
 @bot.event
 async def on_ready():
     print("Bot ready")
@@ -138,7 +252,10 @@ async def on_ready():
     await sync_roles(guild, role, reacted_ids)
     print(f"Roles synced across {len(message_ids)} active message(s)")
     check_events.start()
+    scrim_vc_check.start()
 
+
+# ─── 30-min warning + auto-start loop ────────────────────────────────────────
 
 @tasks.loop(minutes=1)
 async def check_events():
@@ -186,6 +303,56 @@ async def check_events():
 async def before_check():
     await bot.wait_until_ready()
 
+
+# ─── NEW: Prevent Discord from auto-ending the event when VC empties ─────────
+
+@bot.event
+async def on_scheduled_event_update(before, after):
+    """
+    Discord automatically ends a voice-channel event when the last person leaves.
+    If that happens and the scrim is still active (no r!delete was called),
+    we recreate and immediately start a new event so the scrim continues.
+    """
+    global manually_deleting
+
+    if manually_deleting:
+        return  # Intentional deletion – don't restart
+
+    if after.status not in (discord.EventStatus.ended, discord.EventStatus.completed):
+        return
+
+    if not scrim_active:
+        return
+
+    data = load_data()
+    if str(after.id) not in data:
+        return  # Not a tracked scrim event
+
+    print(f"Event '{after.name}' was auto-ended by Discord – restarting it...")
+
+    guild = after.guild
+    try:
+        new_event = await guild.create_scheduled_event(
+            name=after.name,
+            description=after.description or "",
+            start_time=datetime.now(tz=timezone.utc),
+            channel=guild.get_channel(EVENT_CHANNEL_ID),
+            entity_type=discord.EntityType.voice,
+            privacy_level=discord.PrivacyLevel.guild_only
+        )
+        await new_event.start()
+
+        # Re-link the original registration message to the new event
+        old_msg_id = data.pop(str(after.id))
+        data[str(new_event.id)] = old_msg_id
+        save_data(data)
+
+        print(f"Event restarted as '{new_event.name}' (id: {new_event.id})")
+    except Exception as e:
+        print(f"Error restarting event: {e}")
+
+
+# ─── Commands ─────────────────────────────────────────────────────────────────
 
 @bot.command()
 async def create(ctx, *, args):
@@ -254,9 +421,14 @@ async def create(ctx, *, args):
 
 @bot.command()
 async def delete(ctx, *, args):
+    global manually_deleting, scrim_active
+
     if args.strip().lower() != "event":
         await ctx.send("❌ Wrong format! Use: `r!delete event`")
         return
+
+    manually_deleting = True  # Signal: don't restart the event
+    scrim_active = False       # Stop the auto VC check loop
 
     await ctx.send("⏳ Deleting event, messages and roles...")
 
@@ -277,6 +449,7 @@ async def delete(ctx, *, args):
         await ctx.send(f"⚠️ Could not check for active event: `{e}` - continuing cleanup...")
 
     await remove_active_role_all(guild)
+    await remove_spectator_role_all(guild)
 
     try:
         data = load_data()
@@ -289,9 +462,11 @@ async def delete(ctx, *, args):
         await sync_roles(guild, role, reacted_ids)
         print("Roles synced after event deletion")
     except discord.Forbidden:
+        manually_deleting = False
         await ctx.send("❌ I don't have permission to remove roles!")
         return
     except Exception as e:
+        manually_deleting = False
         await ctx.send(f"❌ Error syncing roles: `{e}`")
         return
 
@@ -318,6 +493,7 @@ async def delete(ctx, *, args):
                     pass
         print("Register channel messages deleted")
     except Exception as e:
+        manually_deleting = False
         await ctx.send(f"❌ Error deleting register messages: `{e}`")
         return
 
@@ -337,6 +513,8 @@ async def delete(ctx, *, args):
             print("Event ended")
         except Exception as e:
             await ctx.send(f"⚠️ Could not end event: `{e}`")
+
+    manually_deleting = False  # Reset flag
 
     await ctx.send("✅ Cleanup complete!\n- 🗑️ Messages deleted\n- 👥 Roles updated\n- 🧹 Scrim chat cleared\n- 🔗 Game links cleared")
 
@@ -419,60 +597,81 @@ async def cancel(ctx, *, args):
 
 @bot.command()
 async def event(ctx, *, args):
+    global scrim_active
+
     parts = [p.strip() for p in args.split(" ", 1)]
     subcommand = parts[0].lower()
 
     if subcommand == "update":
-        await ctx.send("⏳ Checking voice channels and assigning Active Scrim role...")
+        await ctx.send("⏳ Checking voice channels and assigning roles...")
 
         guild = ctx.guild
         active_role = guild.get_role(ACTIVE_ROLE_ID)
+        spectator_role = guild.get_role(SPECTATOR_ROLE_ID)
         register_channel = bot.get_channel(CHANNEL_ID)
 
         if active_role is None:
             await ctx.send("❌ Active Scrim role not found!")
             return
-
-        members_in_voice = set()
-        for vc in guild.voice_channels:
-            for member in vc.members:
-                members_in_voice.add(member.id)
-
-        if not members_in_voice:
-            await ctx.send("❌ No members found in any voice channel!")
+        if spectator_role is None:
+            await ctx.send("❌ Spectator Scrim role not found!")
             return
 
+        # Count members per zone for the stats block
         data = load_data()
         message_ids = get_all_message_ids(data)
         reacted_ids = await get_all_reacted_ids(register_channel, message_ids)
 
-        # Track attendance in stats
+        members_in_meeting_point = set()
+        members_in_other_vc = set()
+        for vc in guild.voice_channels:
+            for member in vc.members:
+                if member.bot:
+                    continue
+                if vc.id == EVENT_CHANNEL_ID:
+                    members_in_meeting_point.add(member.id)
+                else:
+                    members_in_other_vc.add(member.id)
+
+        # Track attendance in stats (only registered players)
         stats = load_stats()
+        all_in_vc = members_in_meeting_point | members_in_other_vc
         for user_id in reacted_ids:
             uid_str = str(user_id)
             user_stats = get_or_create_stats(stats, uid_str)
             user_stats["registered"] += 1
-            if user_id in members_in_voice:
+            if user_id in all_in_vc:
                 user_stats["attended"] += 1
         save_stats(stats)
 
-        await remove_active_role_all(guild)
+        # Assign roles
+        await update_scrim_vc_roles(guild)
 
-        assigned = []
-        for user_id in reacted_ids:
-            if user_id in members_in_voice:
-                member = guild.get_member(user_id)
-                if member and not member.bot:
-                    try:
-                        await member.add_roles(active_role)
-                        assigned.append(member.display_name)
-                    except Exception as e:
-                        print(f"Error assigning active role to {member.display_name}: {e}")
+        # Activate the auto-check loop
+        scrim_active = True
 
-        if assigned:
-            await ctx.send(f"✅ Update complete! Assigned **Active Scrim** to **{len(assigned)}** player(s) in voice:\n" + ", ".join(assigned))
+        active_names = [
+            guild.get_member(uid).display_name
+            for uid in members_in_other_vc
+            if guild.get_member(uid) and not guild.get_member(uid).bot
+        ]
+        spectator_names = [
+            guild.get_member(uid).display_name
+            for uid in members_in_meeting_point
+            if guild.get_member(uid) and not guild.get_member(uid).bot
+        ]
+
+        lines = ["✅ Update complete! Auto-check every minute is now **active**."]
+        if active_names:
+            lines.append(f"🎮 **Active Scrim** ({len(active_names)}): {', '.join(active_names)}")
         else:
-            await ctx.send("✅ Update complete! No registered players found in voice.")
+            lines.append("🎮 **Active Scrim**: nobody in game VCs")
+        if spectator_names:
+            lines.append(f"👁️ **Spectator** ({len(spectator_names)}): {', '.join(spectator_names)}")
+        else:
+            lines.append("👁️ **Spectator**: nobody in Meeting Point")
+
+        await ctx.send("\n".join(lines))
 
     elif subcommand == "leaderboard":
         await ctx.send("⏳ Scanning game links and updating leaderboard...")
@@ -543,13 +742,11 @@ async def stats(ctx, *, args=None):
     stats = load_stats()
     leaderboard = load_leaderboard()
 
-    # r!stats top
     if args and args.strip().lower() == "top":
         if not stats:
             await ctx.send("❌ No stats available yet!")
             return
 
-        # Sort by attendance rate
         sorted_stats = []
         for uid, s in stats.items():
             rate = (s["attended"] / s["registered"] * 100) if s["registered"] > 0 else 0
@@ -571,7 +768,6 @@ async def stats(ctx, *, args=None):
         await ctx.send(embed=embed)
         return
 
-    # r!stats @spieler or r!stats (own)
     if ctx.message.mentions:
         target = ctx.message.mentions[0]
     else:
@@ -604,6 +800,8 @@ async def stats(ctx, *, args=None):
 
     await ctx.send(embed=embed)
 
+
+# ─── Reaction events ──────────────────────────────────────────────────────────
 
 @bot.event
 async def on_raw_reaction_add(payload):
