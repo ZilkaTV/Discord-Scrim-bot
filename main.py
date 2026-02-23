@@ -32,6 +32,8 @@ LEADERBOARD_CHANNEL_ID = 1466915479661842725   # Channel where the leaderboard e
 # ─── File Paths ───────────────────────────────────────────────────────────────
 # JSON files used for persistent storage between bot restarts.
 
+ALLOWED_ROLES    = [1466913409340543027, 1466913296597909682]  # Staff, Host – required for all commands except r!stats
+
 IDS_FILE         = "message_ids.json"   # Maps event ID → registration message ID
 LEADERBOARD_FILE = "leaderboard.json"   # Maps user ID → win count (legacy, kept for leaderboard cmd)
 STATS_FILE       = "stats.json"         # Maps user ID → full stats dict
@@ -52,6 +54,22 @@ current_game_participants = set()  # User IDs who had Active Scrim role since th
 # Creates the bot instance with the command prefix "r!" and the intents above.
 
 bot = commands.Bot(command_prefix="r!", intents=intents)
+
+
+# ─── Permission Check ─────────────────────────────────────────────────────────
+# Reusable check that restricts a command to users with Staff or Host role.
+# Applied with @bot.check or as a decorator on individual commands.
+# r!stats is excluded and remains open to everyone.
+
+def has_allowed_role():
+    """Returns a command check that passes only if the user has Staff or Host role."""
+    async def predicate(ctx):
+        user_role_ids = [r.id for r in ctx.author.roles]
+        if any(role_id in user_role_ids for role_id in ALLOWED_ROLES):
+            return True
+        await ctx.send("❌ You don't have permission to use this command.")
+        return False
+    return commands.check(predicate)
 
 
 # ─── File Helpers ─────────────────────────────────────────────────────────────
@@ -543,6 +561,7 @@ async def on_message(message):
 # Usage: r!game winner @PlayerA @PlayerB
 
 @bot.command()
+@has_allowed_role()
 async def game(ctx, subcommand: str = None, *, args=None):
     global current_game_participants
 
@@ -656,6 +675,7 @@ async def game(ctx, subcommand: str = None, *, args=None):
 # Usage: r!create Title, Description, <t:TIMESTAMP:R>
 
 @bot.command()
+@has_allowed_role()
 async def create(ctx, *, args):
     parts = [p.strip() for p in args.split(",")]
     if len(parts) < 3:
@@ -728,6 +748,7 @@ async def create(ctx, *, args):
 # Usage: r!delete event
 
 @bot.command()
+@has_allowed_role()
 async def delete(ctx, *, args):
     global manually_deleting, scrim_active, current_game_participants
 
@@ -841,6 +862,7 @@ async def delete(ctx, *, args):
 # Usage: r!cancel event, 1234567890
 
 @bot.command()
+@has_allowed_role()
 async def cancel(ctx, *, args):
     parts = [p.strip() for p in args.split(",")]
     if len(parts) < 2 or parts[0].lower() != "event":
@@ -927,6 +949,7 @@ async def cancel(ctx, *, args):
 # an updated leaderboard embed to the leaderboard channel.
 
 @bot.command()
+@has_allowed_role()
 async def event(ctx, *, args):
     global scrim_active, current_game_participants
 
