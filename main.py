@@ -841,8 +841,7 @@ async def delete(ctx, *, args):
         await ctx.send(f"❌ Error syncing roles: `{e}`")
         return
 
-    # Delete ALL tracked registration messages (fixes bug where message wasn't removed
-    # when the event had been auto-restarted and got a new ID)
+    # Delete only the tracked registration messages for this scrim session
     try:
         data = load_data()
         all_tracked_msg_ids = list(get_all_message_ids(data))
@@ -856,17 +855,30 @@ async def delete(ctx, *, args):
             except Exception as e:
                 print(f"Error deleting tracked message {msg_id}: {e}")
 
-        # Clear all tracked data since the scrim is over
-        data.clear()
-        save_data(data)
-
-        # Also clean up any other bot messages in the registration channel
+        # Also delete any untracked bot messages from this session
+        # (e.g. the 30-min warning and start notification)
         async for message in register_channel.history(limit=100):
-            if message.author == bot.user:
-                try:
-                    await message.delete()
-                except discord.NotFound:
-                    pass
+            if message.author == bot.user and message.id not in all_tracked_msg_ids:
+                # Only delete if it's NOT a registration message for a future event
+                remaining_data = {k: v for k, v in data.items() if v not in all_tracked_msg_ids}
+                if message.id not in get_all_message_ids(remaining_data):
+                    try:
+                        await message.delete()
+                    except discord.NotFound:
+                        pass
+
+        # Remove only the active event from data, keep future events intact
+        if active_event:
+            event_id_str = str(active_event.id)
+            if event_id_str in data:
+                del data[event_id_str]
+        # Also remove any stale entries whose messages were just deleted
+        for msg_id in all_tracked_msg_ids:
+            for eid, mid in list(data.items()):
+                if mid == msg_id:
+                    del data[eid]
+                    break
+        save_data(data)
         print("Register channel messages deleted")
     except Exception as e:
         manually_deleting = False
