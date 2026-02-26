@@ -12,6 +12,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.reactions = True
 intents.members = True
+intents.voice_states = True   # Required for the bot to join/leave voice channels
 
 
 # ─── Channel & Role IDs ───────────────────────────────────────────────────────
@@ -230,7 +231,40 @@ async def remove_spectator_role_all(guild):
                 print(f"Error removing spectator role from {member.display_name}: {e}")
 
 
-# ─── Scrim VC Role Logic ──────────────────────────────────────────────────────
+# ─── Bot Voice Channel Helpers ───────────────────────────────────────────────
+# The bot joins the Meeting Point voice channel during an active scrim so Discord
+# never auto-ends the scheduled event (Discord ends voice events when the VC is empty).
+# The bot sits silently in the channel – it plays no audio and has no effect on users.
+
+async def join_meeting_point(guild):
+    """Connect the bot to the Meeting Point VC. Moves it there if already in another VC."""
+    channel = guild.get_channel(EVENT_CHANNEL_ID)
+    if channel is None:
+        print("Meeting Point channel not found, cannot join.")
+        return
+    vc = guild.voice_client
+    try:
+        if vc and vc.is_connected():
+            await vc.move_to(channel)
+        else:
+            await channel.connect(self_deaf=True, self_mute=True)
+        print(f"Bot joined Meeting Point: {channel.name}")
+    except Exception as e:
+        print(f"Error joining Meeting Point: {e}")
+
+
+async def leave_voice(guild):
+    """Disconnect the bot from whichever voice channel it is currently in."""
+    vc = guild.voice_client
+    if vc and vc.is_connected():
+        try:
+            await vc.disconnect(force=True)
+            print("Bot left voice channel.")
+        except Exception as e:
+            print(f"Error leaving voice channel: {e}")
+
+
+
 # Core function that decides who gets Active Scrim vs Spectator based on their VC.
 # Also updates current_game_participants so game tracking always knows who is playing.
 # Called both manually (r!event update) and automatically every minute (scrim_vc_check).
@@ -780,6 +814,9 @@ async def delete(ctx, *, args):
     except Exception as e:
         await ctx.send(f"⚠️ Could not check for active event: `{e}` - continuing cleanup...")
 
+    # Bot leaves the Meeting Point voice channel
+    await leave_voice(guild)
+
     # Remove all Active and Spectator roles first
     await remove_active_role_all(guild)
     await remove_spectator_role_all(guild)
@@ -804,25 +841,28 @@ async def delete(ctx, *, args):
         await ctx.send(f"❌ Error syncing roles: `{e}`")
         return
 
-    # Delete the registration message linked to this event
+    # Delete ALL tracked registration messages (fixes bug where message wasn't removed
+    # when the event had been auto-restarted and got a new ID)
     try:
         data = load_data()
-        if active_event:
-            event_id_str = str(active_event.id)
-            if event_id_str in data:
-                msg_id = data[event_id_str]
-                try:
-                    msg = await register_channel.fetch_message(msg_id)
-                    await msg.delete()
-                except discord.NotFound:
-                    pass
-                del data[event_id_str]
-                save_data(data)
+        all_tracked_msg_ids = list(get_all_message_ids(data))
+
+        for msg_id in all_tracked_msg_ids:
+            try:
+                msg = await register_channel.fetch_message(msg_id)
+                await msg.delete()
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"Error deleting tracked message {msg_id}: {e}")
+
+        # Clear all tracked data since the scrim is over
+        data.clear()
+        save_data(data)
 
         # Also clean up any other bot messages in the registration channel
-        remaining_message_ids = get_all_message_ids(data)
         async for message in register_channel.history(limit=100):
-            if message.author == bot.user and message.id not in remaining_message_ids:
+            if message.author == bot.user:
                 try:
                     await message.delete()
                 except discord.NotFound:
@@ -1004,6 +1044,9 @@ async def event(ctx, *, args):
         # Assign Active / Spectator roles based on current VC positions
         # (also populates current_game_participants with players in game VCs)
         await update_scrim_vc_roles(guild)
+
+        # Bot joins Meeting Point so Discord never auto-ends the event due to empty VC
+        await join_meeting_point(guild)
 
         # Activate the per-minute auto-check for the rest of the scrim
         scrim_active = True
