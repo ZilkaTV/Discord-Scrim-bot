@@ -896,13 +896,30 @@ async def delete(ctx, *, args):
     except Exception as e:
         await ctx.send(f"❌ Error clearing game links: `{e}`")
 
-    # End the Discord event
+    # End the active Discord event
     if active_event:
         try:
             await active_event.end()
             print("Event ended")
         except Exception as e:
             await ctx.send(f"⚠️ Could not end event: `{e}`")
+
+    # Delete any leftover past events (ended/completed) that are still on the server
+    try:
+        events = await guild.fetch_scheduled_events()
+        past_count = 0
+        for event in events:
+            if event.status in (discord.EventStatus.ended, discord.EventStatus.completed):
+                try:
+                    await event.delete()
+                    past_count += 1
+                    print(f"Deleted past event: {event.name}")
+                except Exception as e:
+                    print(f"Could not delete past event {event.name}: {e}")
+        if past_count:
+            print(f"Cleaned up {past_count} past event(s)")
+    except Exception as e:
+        await ctx.send(f"⚠️ Could not clean up past events: `{e}`")
 
     manually_deleting = False  # Reset flag – cleanup complete
 
