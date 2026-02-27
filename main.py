@@ -1203,21 +1203,27 @@ async def join(ctx):
         await ctx.send("❌ I don't have **View Channel** permission in the Meeting Point channel!")
         return
 
-    # Check if already in the right channel
     vc = guild.voice_client
-    if vc and vc.is_connected() and vc.channel.id == EVENT_CHANNEL_ID:
-        await ctx.send(f"✅ Already in 🔊 | **{channel.name}**!")
+    if vc and vc.is_connected():
+        if vc.channel.id == EVENT_CHANNEL_ID:
+            await ctx.send(f"✅ Already in 🔊 | **{channel.name}**!")
+            return
+        # Move to Meeting Point if in a different channel
+        try:
+            await vc.move_to(channel)
+            await ctx.send(f"✅ Bot moved to 🔊 | **{channel.name}**! The event will stay active.")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to move: `{e}`")
         return
 
-    success = await join_meeting_point(guild)
-
-    if success:
+    # Not connected at all – join fresh
+    try:
+        await channel.connect(self_deaf=True, self_mute=True)
         await ctx.send(f"✅ Bot joined 🔊 | **{channel.name}**! The event will stay active.")
-    else:
-        await ctx.send(
-            "❌ Failed to join the Meeting Point!\n"
-            "Check the bot's permissions: **Connect** and **View Channel** must both be ✅ in that channel."
-        )
+    except discord.Forbidden:
+        await ctx.send("❌ Missing **Connect** permission in the Meeting Point channel!")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to join: `{e}`")
 
 
 # ─── Command: r!leave ────────────────────────────────────────────────────────
