@@ -245,14 +245,13 @@ async def join_meeting_point(guild):
     vc = guild.voice_client
     try:
         if vc and vc.is_connected():
+            if vc.channel.id == EVENT_CHANNEL_ID:
+                return True  # Already in the right channel
             await vc.move_to(channel)
         else:
             await channel.connect(self_deaf=True, self_mute=True, reconnect=True)
         print(f"Bot joined Meeting Point: {channel.name}")
         return True
-    except discord.ClientException as e:
-        print(f"ClientException joining Meeting Point: {e}")
-        return False
     except discord.Forbidden:
         print("Missing permissions to join Meeting Point!")
         return False
@@ -1196,7 +1195,6 @@ async def join(ctx):
         await ctx.send("❌ Meeting Point channel not found!")
         return
 
-    # Check permissions explicitly before trying
     perms = channel.permissions_for(guild.me)
     if not perms.connect:
         await ctx.send("❌ I don't have **Connect** permission in the Meeting Point channel!")
@@ -1205,20 +1203,40 @@ async def join(ctx):
         await ctx.send("❌ I don't have **View Channel** permission in the Meeting Point channel!")
         return
 
+    # Check if already in the right channel
+    vc = guild.voice_client
+    if vc and vc.is_connected() and vc.channel.id == EVENT_CHANNEL_ID:
+        await ctx.send(f"✅ Already in 🔊 | **{channel.name}**!")
+        return
+
     success = await join_meeting_point(guild)
 
     if success:
         await ctx.send(f"✅ Bot joined 🔊 | **{channel.name}**! The event will stay active.")
     else:
-        vc = guild.voice_client
-        if vc and vc.is_connected():
-            await ctx.send(f"⚠️ Bot is already connected to **{vc.channel.name}**. Use `r!join` again to move it.")
-        else:
-            await ctx.send(
-                "❌ Failed to join the Meeting Point!\n"
-                "Check the bot's permissions: **Connect** and **View Channel** must both be ✅ in that channel.\n"
-                "Also make sure the bot has the **Voice States** intent enabled in the Discord Developer Portal."
-            )
+        await ctx.send(
+            "❌ Failed to join the Meeting Point!\n"
+            "Check the bot's permissions: **Connect** and **View Channel** must both be ✅ in that channel."
+        )
+
+
+# ─── Command: r!leave ────────────────────────────────────────────────────────
+# Manually disconnects the bot from the voice channel it is currently in.
+# Use this if the bot is stuck in a channel or needs to be moved manually.
+# Usage: r!leave
+
+@bot.command()
+@has_allowed_role()
+async def leave(ctx):
+    guild = ctx.guild
+    vc    = guild.voice_client
+
+    if vc and vc.is_connected():
+        channel_name = vc.channel.name
+        await leave_voice(guild)
+        await ctx.send(f"✅ Bot left 🔊 | **{channel_name}**.")
+    else:
+        await ctx.send("⚠️ Bot is not in any voice channel.")
 
 
 # ─── Command: r!winner USER_ID ───────────────────────────────────────────────
