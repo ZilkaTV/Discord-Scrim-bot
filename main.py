@@ -241,16 +241,24 @@ async def join_meeting_point(guild):
     channel = guild.get_channel(EVENT_CHANNEL_ID)
     if channel is None:
         print("Meeting Point channel not found, cannot join.")
-        return
+        return False
     vc = guild.voice_client
     try:
         if vc and vc.is_connected():
             await vc.move_to(channel)
         else:
-            await channel.connect(self_deaf=True, self_mute=True)
+            await channel.connect(self_deaf=True, self_mute=True, reconnect=True)
         print(f"Bot joined Meeting Point: {channel.name}")
+        return True
+    except discord.ClientException as e:
+        print(f"ClientException joining Meeting Point: {e}")
+        return False
+    except discord.Forbidden:
+        print("Missing permissions to join Meeting Point!")
+        return False
     except Exception as e:
         print(f"Error joining Meeting Point: {e}")
+        return False
 
 
 async def leave_voice(guild):
@@ -1181,15 +1189,36 @@ async def event(ctx, *, args):
 @bot.command()
 @has_allowed_role()
 async def join(ctx):
-    guild = ctx.guild
+    guild   = ctx.guild
     channel = guild.get_channel(EVENT_CHANNEL_ID)
 
     if channel is None:
         await ctx.send("❌ Meeting Point channel not found!")
         return
 
-    await join_meeting_point(guild)
-    await ctx.send(f"✅ Bot joined **{channel.name}**! The event will stay active.")
+    # Check permissions explicitly before trying
+    perms = channel.permissions_for(guild.me)
+    if not perms.connect:
+        await ctx.send("❌ I don't have **Connect** permission in the Meeting Point channel!")
+        return
+    if not perms.view_channel:
+        await ctx.send("❌ I don't have **View Channel** permission in the Meeting Point channel!")
+        return
+
+    success = await join_meeting_point(guild)
+
+    if success:
+        await ctx.send(f"✅ Bot joined 🔊 | **{channel.name}**! The event will stay active.")
+    else:
+        vc = guild.voice_client
+        if vc and vc.is_connected():
+            await ctx.send(f"⚠️ Bot is already connected to **{vc.channel.name}**. Use `r!join` again to move it.")
+        else:
+            await ctx.send(
+                "❌ Failed to join the Meeting Point!\n"
+                "Check the bot's permissions: **Connect** and **View Channel** must both be ✅ in that channel.\n"
+                "Also make sure the bot has the **Voice States** intent enabled in the Discord Developer Portal."
+            )
 
 
 # ─── Command: r!winner USER_ID ───────────────────────────────────────────────
