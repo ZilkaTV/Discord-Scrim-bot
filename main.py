@@ -1125,7 +1125,11 @@ async def event(ctx, *, args):
                 games_found += 1
 
         if games_found == 0:
-            await ctx.send("❌ No winner messages found in game-links channel!")
+            await ctx.send(
+                "⚠️ No winner messages found in game-links channel!\n"
+                "Who won? Use `r!winner USER_ID` to manually add a win.\n"
+                "Example: `r!winner 123456789012345678`"
+            )
             return
 
         save_leaderboard(leaderboard)
@@ -1168,7 +1172,103 @@ async def event(ctx, *, args):
         await ctx.send("❌ Unknown subcommand! Available: `r!event update`, `r!event leaderboard`")
 
 
-# ─── Command: r!stats ────────────────────────────────────────────────────────
+# ─── Command: r!join ─────────────────────────────────────────────────────────
+# Makes the bot manually join the Meeting Point voice channel.
+# Use this if the bot failed to join automatically after r!event update,
+# or if it got disconnected during a scrim session.
+# Usage: r!join
+
+@bot.command()
+@has_allowed_role()
+async def join(ctx):
+    guild = ctx.guild
+    channel = guild.get_channel(EVENT_CHANNEL_ID)
+
+    if channel is None:
+        await ctx.send("❌ Meeting Point channel not found!")
+        return
+
+    await join_meeting_point(guild)
+    await ctx.send(f"✅ Bot joined **{channel.name}**! The event will stay active.")
+
+
+# ─── Command: r!winner USER_ID ───────────────────────────────────────────────
+# Manually adds a win to a player by their Discord User ID.
+# Useful when r!event leaderboard finds no winner messages in game-links.
+# Also updates games_won, win_streak and best_streak in stats.json.
+# Usage: r!winner 123456789012345678
+
+@bot.command()
+@has_allowed_role()
+async def winner(ctx, user_id: str = None):
+    if user_id is None:
+        await ctx.send(
+            "❌ Please provide a User ID!\n"
+            "Usage: `r!winner USER_ID`\n"
+            "To get a User ID: right-click the user → Copy User ID (Developer Mode must be on)"
+        )
+        return
+
+    try:
+        user_id_int = int(user_id.strip())
+    except ValueError:
+        await ctx.send("❌ Invalid User ID! It must be a number.")
+        return
+
+    guild  = ctx.guild
+    member = guild.get_member(user_id_int)
+
+    if member is None:
+        # Try fetching from Discord directly in case they're not cached
+        try:
+            member = await guild.fetch_member(user_id_int)
+        except discord.NotFound:
+            await ctx.send(f"❌ No user found with ID `{user_id_int}` on this server.")
+            return
+        except Exception as e:
+            await ctx.send(f"❌ Error fetching user: `{e}`")
+            return
+
+    if member.bot:
+        await ctx.send("❌ You can't add a win to a bot!")
+        return
+
+    # Update stats
+    stats      = load_stats()
+    leaderboard = load_leaderboard()
+    uid_str    = str(user_id_int)
+    user_stats = get_or_create_stats(stats, uid_str)
+
+    user_stats["games_won"]  += 1
+    user_stats["win_streak"] += 1
+    if user_stats["win_streak"] > user_stats["best_streak"]:
+        user_stats["best_streak"] = user_stats["win_streak"]
+    leaderboard[uid_str] = leaderboard.get(uid_str, 0) + 1
+
+    save_stats(stats)
+    save_leaderboard(leaderboard)
+
+    streak  = user_stats["win_streak"]
+    best    = user_stats["best_streak"]
+    total   = user_stats["games_won"]
+    fire    = " 🔥" if streak >= 3 else ""
+
+    embed = discord.Embed(
+        title="🏆 Win Added!",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="Player",         value=member.mention,       inline=True)
+    embed.add_field(name="Total Wins",     value=str(total),           inline=True)
+    embed.add_field(name="Current Streak", value=f"{streak}{fire}",    inline=True)
+    embed.add_field(name="Best Streak",    value=str(best),            inline=True)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text=f"Added manually by {ctx.author.display_name}")
+
+    await ctx.send(embed=embed)
+    print(f"[r!winner] Win manually added to {member.display_name} by {ctx.author.display_name}")
+
+
+
 # Shows full stats for a player including game tracking fields.
 # Usage:
 #   r!stats           → own stats
