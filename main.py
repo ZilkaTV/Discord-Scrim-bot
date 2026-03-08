@@ -454,8 +454,26 @@ async def on_ready():
     reacted_ids = await get_all_reacted_ids(channel, message_ids)
     await sync_roles(guild, role, reacted_ids)
     print(f"Roles synced across {len(message_ids)} active message(s)")
-    check_events.start()
-    scrim_vc_check.start()
+
+    # Start loops only if not already running
+    if not check_events.is_running():
+        check_events.start()
+        print("check_events loop started")
+    if not scrim_vc_check.is_running():
+        scrim_vc_check.start()
+        print("scrim_vc_check loop started")
+
+
+@bot.event
+async def on_resumed():
+    """Fires after every reconnect. Restarts any loops that may have stopped."""
+    print("Bot resumed – checking loops...")
+    if not check_events.is_running():
+        check_events.start()
+        print("check_events loop restarted after resume")
+    if not scrim_vc_check.is_running():
+        scrim_vc_check.start()
+        print("scrim_vc_check loop restarted after resume")
 
 
 # ─── Event Warning & Auto-Start Loop ─────────────────────────────────────────
@@ -466,14 +484,16 @@ async def on_ready():
 @tasks.loop(minutes=1)
 async def check_events():
     now = datetime.now(tz=timezone.utc)
+    print(f"[check_events] tick at {now.strftime('%H:%M:%S')} UTC")
     for guild in bot.guilds:
         events = await guild.fetch_scheduled_events()
         for event in events:
             if event.status == discord.EventStatus.scheduled:
                 diff = (event.start_time - now).total_seconds()
 
-                # 30-minute warning (fires once per event, between 29–30 min remaining)
-                if 1740 <= diff <= 1800 and event.id not in warned_events:
+                # 30-minute warning (fires once per event, between 28–32 min remaining)
+                # Wide window so a reconnect during that minute doesn't cause it to be missed
+                if 1680 <= diff <= 1920 and event.id not in warned_events:
                     try:
                         channel    = bot.get_channel(CHANNEL_ID)
                         role       = guild.get_role(ROLE_ID)
