@@ -54,7 +54,7 @@ current_game_participants = set()  # User IDs who had Active Scrim role since th
 # ─── Bot Initialization ───────────────────────────────────────────────────────
 # Creates the bot instance with the command prefix "r!" and the intents above.
 
-bot = commands.Bot(command_prefix="r!", intents=intents)
+bot = commands.Bot(command_prefix="r!", intents=intents, case_insensitive=True)
 
 
 # ─── Permission Check ─────────────────────────────────────────────────────────
@@ -963,6 +963,8 @@ async def delete(ctx, *, args):
 @bot.command()
 @has_allowed_role()
 async def cancel(ctx, *, args):
+    global scrim_active, current_game_participants
+
     parts = [p.strip() for p in args.split(",")]
     if len(parts) < 2 or parts[0].lower() != "event":
         await ctx.send("❌ Wrong format! Use: `r!cancel event, EVENT_ID`")
@@ -1001,6 +1003,8 @@ async def cancel(ctx, *, args):
 
     try:
         await target_event.cancel()
+        scrim_active = False
+        current_game_participants = set()
         print(f"Event {target_event.name} cancelled!")
     except Exception as e:
         await ctx.send(f"❌ Error cancelling event: `{e}`")
@@ -1268,7 +1272,118 @@ async def leave(ctx):
         await ctx.send("⚠️ Bot is not in any voice channel.")
 
 
-# ─── Command: r!winner USER_ID ───────────────────────────────────────────────
+# ─── Command: r!stopupdate ───────────────────────────────────────────────────
+# Manually stops the automatic VC role check loop without ending the event.
+# Use this if you want to pause role tracking mid-scrim without a full cleanup.
+# Usage: r!stopupdate
+
+@bot.command()
+@has_allowed_role()
+async def stopupdate(ctx):
+    global scrim_active, current_game_participants
+
+    if not scrim_active:
+        await ctx.send("⚠️ Auto-check is not currently active.")
+        return
+
+    scrim_active              = False
+    current_game_participants = set()
+
+    # Remove Active Scrim and Spectator roles from everyone
+    guild = ctx.guild
+    await remove_active_role_all(guild)
+    await remove_spectator_role_all(guild)
+
+    await ctx.send("✅ Auto VC check stopped. Active Scrim & Spectator roles removed. Participant tracking reset.\nThe event is still active – use `r!delete event` to fully end the scrim.")
+
+
+# ─── Command: r!removewins @Player [amount] ──────────────────────────────────
+# Removes wins from a player. Defaults to 1 win if no amount is specified.
+# Also adjusts games_won in stats and the leaderboard.
+# Usage:
+#   r!removewins @Player       → removes 1 win
+#   r!removewins @Player 3     → removes 3 wins
+#   r!removewins 123456789     → also works with User ID
+
+@bot.command()
+@has_allowed_role()
+async def removewins(ctx, *, args=None):
+    if args is None:
+        await ctx.send(
+            "❌ Please provide a user!\n"
+            "Usage: `r!removewins @Player` or `r!removewins @Player 3`"
+        )
+        return
+
+    # Parse mentions and/or raw IDs
+    tokens    = args.split()
+    member    = None
+    amount    = 1
+
+    # Check if last token is a number (the amount to remove)
+    if tokens and tokens[-1].isdigit():
+        amount = int(tokens[-1])
+        tokens = tokens[:-1]
+
+    # Get member from mention or ID
+    if ctx.message.mentions:
+        member = ctx.message.mentions[0]
+    else:
+        for token in tokens:
+            token = token.strip("<@!>")
+            if token.isdigit():
+                try:
+                    member = ctx.guild.get_member(int(token)) or await ctx.guild.fetch_member(int(token))
+                except discord.NotFound:
+                    await ctx.send(f"❌ No user found with ID `{token}`.")
+                    return
+                break
+
+    if member is None:
+        await ctx.send("❌ Could not find the user. Use a mention or User ID.")
+        return
+
+    if member.bot:
+        await ctx.send("❌ Can't remove wins from a bot.")
+        return
+
+    if amount < 1:
+        await ctx.send("❌ Amount must be at least 1.")
+        return
+
+    guild       = ctx.guild
+    stats       = load_stats()
+    leaderboard = load_leaderboard()
+    uid_str     = str(member.id)
+    user_stats  = get_or_create_stats(stats, uid_str)
+
+    # Clamp so we don't go below 0
+    old_wins           = user_stats["games_won"]
+    removed            = min(amount, old_wins)
+    user_stats["games_won"] = old_wins - removed
+
+    old_lb             = leaderboard.get(uid_str, 0)
+    leaderboard[uid_str] = max(0, old_lb - removed)
+
+    # Reset win streak if it's now higher than remaining wins (sanity clamp)
+    if user_stats["win_streak"] > user_stats["games_won"]:
+        user_stats["win_streak"] = user_stats["games_won"]
+
+    save_stats(stats)
+    save_leaderboard(leaderboard)
+
+    embed = discord.Embed(title="➖ Wins Removed", color=discord.Color.red())
+    embed.add_field(name="Player",       value=member.mention,                   inline=True)
+    embed.add_field(name="Removed",      value=f"-{removed}",                    inline=True)
+    embed.add_field(name="Wins Left",    value=str(user_stats["games_won"]),     inline=True)
+    embed.add_field(name="Leaderboard",  value=str(leaderboard[uid_str]),        inline=True)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text=f"Adjusted by {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+    print(f"[r!removewins] Removed {removed} win(s) from {member.display_name} by {ctx.author.display_name}")
+
+
+
 # Manually adds a win to a player by their Discord User ID.
 # Useful when r!event leaderboard finds no winner messages in game-links.
 # Also updates games_won, win_streak and best_streak in stats.json.
