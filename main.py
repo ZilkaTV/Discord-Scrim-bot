@@ -1273,72 +1273,71 @@ async def leave(ctx):
 
 @bot.command()
 @has_allowed_role()
-async def winner(ctx, user_id: str = None):
-    if user_id is None:
+async def winner(ctx, *, args=None):
+    if args is None:
         await ctx.send(
-            "❌ Please provide a User ID!\n"
-            "Usage: `r!winner USER_ID`\n"
-            "To get a User ID: right-click the user → Copy User ID (Developer Mode must be on)"
+            "❌ Please provide at least one user!\n"
+            "Usage: `r!winner @Player1 @Player2` or `r!winner 123456789 987654321`"
         )
         return
 
-    try:
-        user_id_int = int(user_id.strip())
-    except ValueError:
-        await ctx.send("❌ Invalid User ID! It must be a number.")
+    # Collect IDs from mentions first, then parse any raw IDs from the text
+    member_ids = {m.id for m in ctx.message.mentions if not m.bot}
+
+    # Also parse any plain number IDs in the args (not already covered by mentions)
+    for token in args.split():
+        token = token.strip("<@!>")
+        if token.isdigit():
+            member_ids.add(int(token))
+
+    if not member_ids:
+        await ctx.send("❌ No valid users found! Use mentions or User IDs.")
         return
 
-    guild  = ctx.guild
-    member = guild.get_member(user_id_int)
-
-    if member is None:
-        # Try fetching from Discord directly in case they're not cached
-        try:
-            member = await guild.fetch_member(user_id_int)
-        except discord.NotFound:
-            await ctx.send(f"❌ No user found with ID `{user_id_int}` on this server.")
-            return
-        except Exception as e:
-            await ctx.send(f"❌ Error fetching user: `{e}`")
-            return
-
-    if member.bot:
-        await ctx.send("❌ You can't add a win to a bot!")
-        return
-
-    # Update stats
-    stats      = load_stats()
+    guild       = ctx.guild
+    stats       = load_stats()
     leaderboard = load_leaderboard()
-    uid_str    = str(user_id_int)
-    user_stats = get_or_create_stats(stats, uid_str)
+    results     = []
 
-    user_stats["games_won"]  += 1
-    user_stats["win_streak"] += 1
-    if user_stats["win_streak"] > user_stats["best_streak"]:
-        user_stats["best_streak"] = user_stats["win_streak"]
-    leaderboard[uid_str] = leaderboard.get(uid_str, 0) + 1
+    for user_id_int in member_ids:
+        member = guild.get_member(user_id_int)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id_int)
+            except discord.NotFound:
+                await ctx.send(f"⚠️ No user found with ID `{user_id_int}` – skipping.")
+                continue
+            except Exception as e:
+                await ctx.send(f"⚠️ Error fetching `{user_id_int}`: `{e}` – skipping.")
+                continue
+
+        if member.bot:
+            continue
+
+        uid_str    = str(user_id_int)
+        user_stats = get_or_create_stats(stats, uid_str)
+        user_stats["games_won"]  += 1
+        user_stats["win_streak"] += 1
+        if user_stats["win_streak"] > user_stats["best_streak"]:
+            user_stats["best_streak"] = user_stats["win_streak"]
+        leaderboard[uid_str] = leaderboard.get(uid_str, 0) + 1
+
+        streak = user_stats["win_streak"]
+        fire   = " 🔥" if streak >= 3 else ""
+        results.append(f"{member.mention} — {user_stats['games_won']} wins | streak: {streak}{fire}")
 
     save_stats(stats)
     save_leaderboard(leaderboard)
 
-    streak  = user_stats["win_streak"]
-    best    = user_stats["best_streak"]
-    total   = user_stats["games_won"]
-    fire    = " 🔥" if streak >= 3 else ""
+    if not results:
+        await ctx.send("❌ No valid users were updated.")
+        return
 
-    embed = discord.Embed(
-        title="🏆 Win Added!",
-        color=discord.Color.gold()
-    )
-    embed.add_field(name="Player",         value=member.mention,       inline=True)
-    embed.add_field(name="Total Wins",     value=str(total),           inline=True)
-    embed.add_field(name="Current Streak", value=f"{streak}{fire}",    inline=True)
-    embed.add_field(name="Best Streak",    value=str(best),            inline=True)
-    embed.set_thumbnail(url=member.display_avatar.url)
+    embed = discord.Embed(title="🏆 Win(s) Added!", color=discord.Color.gold())
+    embed.add_field(name="Updated Players", value="\n".join(results), inline=False)
     embed.set_footer(text=f"Added manually by {ctx.author.display_name}")
-
     await ctx.send(embed=embed)
-    print(f"[r!winner] Win manually added to {member.display_name} by {ctx.author.display_name}")
+    print(f"[r!winner] Wins added to {len(results)} player(s) by {ctx.author.display_name}")
 
 
 
