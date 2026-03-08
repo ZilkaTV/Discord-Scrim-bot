@@ -123,7 +123,7 @@ def save_stats(data: dict):
         json.dump(data, f)
 
 
-def get_or_create_stats(stats: dict, user_id: str) -> dict:
+def get_or_create_stats(stats: dict, user_id) -> dict:
     """
     Return the stats entry for a user, creating a full default entry if it doesn't exist.
     Fields:
@@ -134,20 +134,23 @@ def get_or_create_stats(stats: dict, user_id: str) -> dict:
       win_streak    – current consecutive win streak
       best_streak   – personal best consecutive win streak
     """
-    if user_id not in stats:
-        stats[user_id] = {
-            "registered":   0,
-            "attended":     0,
-            "games_played": 0,
-            "games_won":    0,
-            "win_streak":   0,
-            "best_streak":  0,
-        }
+    user_id = str(user_id)  # Always ensure string key
+    default = {
+        "registered":   0,
+        "attended":     0,
+        "games_played": 0,
+        "games_won":    0,
+        "win_streak":   0,
+        "best_streak":  0,
+    }
+    # Create if missing, or reset if the entry is not a dict (corrupt data)
+    if user_id not in stats or not isinstance(stats[user_id], dict):
+        stats[user_id] = default
     else:
         # Migrate older entries that are missing the new game-tracking fields
-        for field in ("games_played", "games_won", "win_streak", "best_streak"):
+        for field, default_val in default.items():
             if field not in stats[user_id]:
-                stats[user_id][field] = 0
+                stats[user_id][field] = default_val
     return stats[user_id]
 
 
