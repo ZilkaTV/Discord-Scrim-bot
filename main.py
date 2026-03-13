@@ -282,20 +282,22 @@ async def leave_voice(guild):
 async def update_scrim_vc_roles(guild):
     """
     Scans all voice channels and assigns roles accordingly:
-      - Meeting Point (EVENT_CHANNEL_ID) → Spectator Scrim role (remove Active)
-      - Any other voice channel          → Active Scrim role    (remove Spectator)
-      - Not in any voice channel         → both roles removed
+      - Meeting Point (EVENT_CHANNEL_ID)              → Spectator Scrim role (remove Active)
+      - Other VC + has Scrim registration role        → Active Scrim role    (remove Spectator)
+      - Other VC + NO Scrim registration role         → Spectator role       (remove Active)
+      - Not in any voice channel                      → both roles removed
 
-    Additionally adds everyone who receives Active Scrim to current_game_participants
-    so that games can be attributed to everyone who played since the last r!event update.
+    Only registered players (with ROLE_ID) receive the Active Scrim role.
+    Unregistered players in game VCs are treated as spectators.
     """
     global current_game_participants
 
     active_role    = guild.get_role(ACTIVE_ROLE_ID)
     spectator_role = guild.get_role(SPECTATOR_ROLE_ID)
+    scrim_role     = guild.get_role(ROLE_ID)
 
-    if not active_role or not spectator_role:
-        print("Active or Spectator role not found!")
+    if not active_role or not spectator_role or not scrim_role:
+        print("Active, Spectator or Scrim registration role not found!")
         return
 
     members_in_meeting_point = set()
@@ -312,10 +314,7 @@ async def update_scrim_vc_roles(guild):
 
     all_in_vc = members_in_meeting_point | members_in_other_vc
 
-    # Add current game-VC players to the participant pool for this scrim session
-    current_game_participants |= members_in_other_vc
-
-    # Meeting Point → Spectator role, remove Active
+    # Meeting Point → Spectator, remove Active
     for member_id in members_in_meeting_point:
         member = guild.get_member(member_id)
         if member:
@@ -330,10 +329,13 @@ async def update_scrim_vc_roles(guild):
                 except Exception as e:
                     print(f"Error removing active role from {member.display_name}: {e}")
 
-    # Other VCs → Active role, remove Spectator
+    # Other VCs → Active if registered, Spectator if not
     for member_id in members_in_other_vc:
         member = guild.get_member(member_id)
-        if member:
+        if not member:
+            continue
+        if scrim_role in member.roles:
+            # Registered → Active Scrim
             if active_role not in member.roles:
                 try:
                     await member.add_roles(active_role)
@@ -344,6 +346,19 @@ async def update_scrim_vc_roles(guild):
                     await member.remove_roles(spectator_role)
                 except Exception as e:
                     print(f"Error removing spectator role from {member.display_name}: {e}")
+            current_game_participants.add(member_id)
+        else:
+            # Not registered → Spectator only
+            if spectator_role not in member.roles:
+                try:
+                    await member.add_roles(spectator_role)
+                except Exception as e:
+                    print(f"Error adding spectator role to {member.display_name}: {e}")
+            if active_role in member.roles:
+                try:
+                    await member.remove_roles(active_role)
+                except Exception as e:
+                    print(f"Error removing active role from {member.display_name}: {e}")
 
     # Left all VCs → remove both roles
     for member in list(active_role.members):
@@ -362,7 +377,7 @@ async def update_scrim_vc_roles(guild):
 
     print(
         f"[scrim_vc_check] Meeting Point: {len(members_in_meeting_point)} spectators | "
-        f"Other VCs: {len(members_in_other_vc)} active players | "
+        f"Other VCs: {len(members_in_other_vc)} in game VCs | "
         f"Participant pool: {len(current_game_participants)}"
     )
 
@@ -489,7 +504,14 @@ async def check_events():
     now = datetime.now(tz=timezone.utc)
     print(f"[check_events] tick at {now.strftime('%H:%M:%S')} UTC")
     for guild in bot.guilds:
-        events = await guild.fetch_scheduled_events()
+        try:
+            events = await guild.fetch_scheduled_events()
+        except discord.errors.DiscordServerError as e:
+            print(f"[check_events] Discord API unavailable (503), skipping tick: {e}")
+            return
+        except Exception as e:
+            print(f"[check_events] Error fetching events, skipping tick: {e}")
+            return
         for event in events:
             if event.status == discord.EventStatus.scheduled:
                 diff = (event.start_time - now).total_seconds()
@@ -1459,6 +1481,89 @@ async def winner(ctx, *, args=None):
 
 
 
+# ─── Command: r!info ─────────────────────────────────────────────────────────
+# Describes the bot and its purpose.
+# Usage: r!info
+
+@bot.command()
+async def info(ctx):
+    embed = discord.Embed(
+        title="[SCRIM] Bot — Info",
+        description=(
+            "The SCRIM Bot manages competitive scrim sessions on this server.\n\n"
+            "**What it does:**\n"
+            "- Creates and manages Discord scheduled events for scrims\n"
+            "- Posts registration messages — players react with ✅ to sign up\n"
+            "- Automatically assigns **Active Scrim** and **Spectator** roles based on voice channel activity\n"
+            "- Tracks game results and win streaks for every player\n"
+            "- Maintains a live leaderboard with points and stats\n"
+            "- Sends a 30-minute warning before each event starts\n"
+            "- Stays in the Meeting Point voice channel to keep the event alive\n"
+            "- Cleans up all messages, roles and events at the end of a scrim\n\n"
+            "**Prefix:** `r!`\n"
+            "**Commands:** Use `r!cmd` for a full list\n"
+            "**Permissions:** Most commands require the **Staff** or **Host** role"
+        ),
+        color=discord.Color.blurple()
+    )
+    embed.set_footer(text="SCRIM Bot • Made for competitive scrim management")
+    await ctx.send(embed=embed)
+
+
+# ─── Command: r!cmd ──────────────────────────────────────────────────────────
+# Lists all commands with a short description.
+# Usage: r!cmd
+
+@bot.command()
+async def cmd(ctx):
+    embed = discord.Embed(
+        title="[SCRIM] Bot — Commands",
+        color=discord.Color.blurple()
+    )
+
+    embed.add_field(name="📅 Event Management", value=(
+        "`r!create` — Create an event & registration post\n"
+        "`r!cancel event, ID` — Cancel a scheduled event\n"
+        "`r!delete event` — End scrim & full cleanup"
+    ), inline=False)
+
+    embed.add_field(name="🔊 Voice Channel", value=(
+        "`r!join` — Bot joins Meeting Point VC\n"
+        "`r!leave` — Bot leaves voice channel"
+    ), inline=False)
+
+    embed.add_field(name="🎮 Scrim Session", value=(
+        "`r!event update` — Assign roles, start auto-check\n"
+        "`r!event leaderboard` — Post updated leaderboard\n"
+        "`r!stopupdate` — Stop auto-check & remove scrim roles"
+    ), inline=False)
+
+    embed.add_field(name="🏆 Game Tracking", value=(
+        "`r!game winner @A @B` — Log a game result manually\n"
+        "`r!winner @A @B` — Add wins manually (mentions or IDs)\n"
+        "`r!removewins @Player [amount]` — Remove wins from a player"
+    ), inline=False)
+
+    embed.add_field(name="📊 Stats", value=(
+        "`r!stats` — Your own stats\n"
+        "`r!stats @Player` — Another player's stats\n"
+        "`r!stats top` — Top 10 by attendance rate"
+    ), inline=False)
+
+    embed.add_field(name="ℹ️ General", value=(
+        "`r!info` — About this bot\n"
+        "`r!cmd` — This command list"
+    ), inline=False)
+
+    embed.add_field(name="🔄 Workflow", value=(
+        "`r!create` → `r!join` → `r!event update` → log games → `r!event leaderboard` → `r!delete event`"
+    ), inline=False)
+
+    embed.set_footer(text="Staff & Host only • except r!stats, r!info, r!cmd")
+    await ctx.send(embed=embed)
+
+
+# ─── Command: r!stats ────────────────────────────────────────────────────────
 # Shows full stats for a player including game tracking fields.
 # Usage:
 #   r!stats           → own stats
