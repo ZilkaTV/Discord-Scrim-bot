@@ -38,6 +38,7 @@ ALLOWED_ROLES    = [1466913409340543027, 1466913296597909682]  # Staff, Host –
 IDS_FILE         = "message_ids.json"   # Maps event ID → registration message ID
 LEADERBOARD_FILE = "leaderboard.json"   # Maps user ID → win count (legacy, kept for leaderboard cmd)
 STATS_FILE       = "stats.json"         # Maps user ID → full stats dict
+GUILD_CONFIGS_FILE = "guild_configs.json"  # Per-guild configuration (channels, roles)
 
 
 # ─── Runtime State ────────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ scrim_active             = False   # True once r!event update is used; activates
 manually_deleting        = False   # True while r!delete event is running; prevents auto event restart
 current_game_participants = set()  # User IDs who had Active Scrim role since the last r!event update
                                    # Everyone in this set counts as "has played" when a game is logged
+pending_setups           = {}      # Guild ID → setup wizard state (active r!setup sessions)
 
 
 # ─── Bot Initialization ───────────────────────────────────────────────────────
@@ -63,14 +65,71 @@ bot = commands.Bot(command_prefix="r!", intents=intents, case_insensitive=True)
 # r!stats is excluded and remains open to everyone.
 
 def has_allowed_role():
-    """Returns a command check that passes only if the user has Staff or Host role."""
+    """Returns a command check that passes only if the user has Staff or Host role (per guild config)."""
     async def predicate(ctx):
+        guild_allowed = get_cfg(ctx.guild.id, "allowed_roles")
         user_role_ids = [r.id for r in ctx.author.roles]
-        if any(role_id in user_role_ids for role_id in ALLOWED_ROLES):
+        if any(role_id in user_role_ids for role_id in guild_allowed):
             return True
         await ctx.send("❌ You don't have permission to use this command.")
         return False
     return commands.check(predicate)
+
+
+# ─── Guild Config Helpers ─────────────────────────────────────────────────────
+# Each guild stores its own channel/role IDs in guild_configs.json.
+# get_cfg() returns the guild-specific value, or falls back to the hardcoded
+# constants (so the main server works without any setup).
+
+# Mapping from config key → hardcoded fallback constant
+_DEFAULTS = {
+    "channel_id":             CHANNEL_ID,
+    "role_id":                ROLE_ID,
+    "active_role_id":         ACTIVE_ROLE_ID,
+    "spectator_role_id":      SPECTATOR_ROLE_ID,
+    "mention_roles":          MENTION_ROLES,
+    "scrim_chat_id":          SCRIM_CHAT_ID,
+    "event_channel_id":       EVENT_CHANNEL_ID,
+    "game_links_id":          GAME_LINKS_ID,
+    "leaderboard_channel_id": LEADERBOARD_CHANNEL_ID,
+    "allowed_roles":          ALLOWED_ROLES,
+}
+
+def load_guild_configs() -> dict:
+    """Load guild_configs.json → {guild_id: {key: value}}. Returns {} if file doesn't exist."""
+    if os.path.exists(GUILD_CONFIGS_FILE):
+        with open(GUILD_CONFIGS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_guild_configs(data: dict):
+    """Write the given dict to guild_configs.json."""
+    with open(GUILD_CONFIGS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def get_cfg(guild_id, key):
+    """Return the guild-specific config value, or fall back to the hardcoded constant."""
+    configs = load_guild_configs()
+    guild_cfg = configs.get(str(guild_id), {})
+    return guild_cfg.get(key, _DEFAULTS.get(key))
+
+def set_cfg(guild_id, key, value):
+    """Save a single config value for a guild."""
+    configs = load_guild_configs()
+    gid = str(guild_id)
+    if gid not in configs:
+        configs[gid] = {}
+    configs[gid][key] = value
+    save_guild_configs(configs)
+
+def is_configured(guild_id) -> bool:
+    """Returns True if the guild has a completed setup config."""
+    configs = load_guild_configs()
+    cfg = configs.get(str(guild_id), {})
+    required = ["channel_id", "role_id", "active_role_id", "spectator_role_id",
+                "scrim_chat_id", "event_channel_id", "game_links_id",
+                "leaderboard_channel_id", "allowed_roles"]
+    return all(k in cfg for k in required)
 
 
 # ─── File Helpers ─────────────────────────────────────────────────────────────
@@ -214,7 +273,7 @@ async def sync_roles(guild, role, reacted_ids: set):
 
 async def remove_active_role_all(guild):
     """Strip the Active Scrim role from every member who currently has it."""
-    active_role = guild.get_role(ACTIVE_ROLE_ID)
+    active_role = guild.get_role(get_cfg(guild.id, "active_role_id"))
     if active_role:
         for member in list(active_role.members):
             try:
@@ -225,7 +284,7 @@ async def remove_active_role_all(guild):
 
 async def remove_spectator_role_all(guild):
     """Strip the Spectator Scrim role from every member who currently has it."""
-    spectator_role = guild.get_role(SPECTATOR_ROLE_ID)
+    spectator_role = guild.get_role(get_cfg(guild.id, "spectator_role_id"))
     if spectator_role:
         for member in list(spectator_role.members):
             try:
@@ -241,14 +300,14 @@ async def remove_spectator_role_all(guild):
 
 async def join_meeting_point(guild):
     """Connect the bot to the Meeting Point VC. Moves it there if already in another VC."""
-    channel = guild.get_channel(EVENT_CHANNEL_ID)
+    channel = guild.get_channel(get_cfg(guild.id, "event_channel_id"))
     if channel is None:
         print("Meeting Point channel not found, cannot join.")
         return False
     vc = guild.voice_client
     try:
         if vc and vc.is_connected():
-            if vc.channel.id == EVENT_CHANNEL_ID:
+            if vc.channel.id == get_cfg(guild.id, "event_channel_id"):
                 return True  # Already in the right channel
             await vc.move_to(channel)
         else:
@@ -292,9 +351,9 @@ async def update_scrim_vc_roles(guild):
     """
     global current_game_participants
 
-    active_role    = guild.get_role(ACTIVE_ROLE_ID)
-    spectator_role = guild.get_role(SPECTATOR_ROLE_ID)
-    scrim_role     = guild.get_role(ROLE_ID)
+    active_role    = guild.get_role(get_cfg(guild.id, "active_role_id"))
+    spectator_role = guild.get_role(get_cfg(guild.id, "spectator_role_id"))
+    scrim_role     = guild.get_role(get_cfg(guild.id, "role_id"))
 
     if not active_role or not spectator_role or not scrim_role:
         print("Active, Spectator or Scrim registration role not found!")
@@ -302,12 +361,13 @@ async def update_scrim_vc_roles(guild):
 
     members_in_meeting_point = set()
     members_in_other_vc      = set()
+    event_vc_id              = get_cfg(guild.id, "event_channel_id")
 
     for vc in guild.voice_channels:
         for member in vc.members:
             if member.bot:
                 continue
-            if vc.id == EVENT_CHANNEL_ID:
+            if vc.id == event_vc_id:
                 members_in_meeting_point.add(member.id)
             else:
                 members_in_other_vc.add(member.id)
@@ -464,14 +524,22 @@ async def before_scrim_vc_check():
 @bot.event
 async def on_ready():
     print("Bot ready")
-    channel     = bot.get_channel(CHANNEL_ID)
-    guild       = channel.guild
-    role        = guild.get_role(ROLE_ID)
-    data        = load_data()
-    message_ids = get_all_message_ids(data)
-    reacted_ids = await get_all_reacted_ids(channel, message_ids)
-    await sync_roles(guild, role, reacted_ids)
-    print(f"Roles synced across {len(message_ids)} active message(s)")
+    for guild in bot.guilds:
+        try:
+            channel_id = get_cfg(guild.id, "channel_id")
+            role_id    = get_cfg(guild.id, "role_id")
+            channel    = bot.get_channel(channel_id)
+            if channel is None:
+                print(f"[{guild.name}] Registration channel not found – skipping role sync (run r!setup)")
+                continue
+            role        = guild.get_role(role_id)
+            data        = load_data()
+            message_ids = get_all_message_ids(data)
+            reacted_ids = await get_all_reacted_ids(channel, message_ids)
+            await sync_roles(guild, role, reacted_ids)
+            print(f"[{guild.name}] Roles synced across {len(message_ids)} active message(s)")
+        except Exception as e:
+            print(f"[{guild.name}] Error during startup sync: {e}")
 
     # Start loops only if not already running
     if not check_events.is_running():
@@ -520,8 +588,8 @@ async def check_events():
                 # Wide window so a reconnect during that minute doesn't cause it to be missed
                 if 1680 <= diff <= 1920 and event.id not in warned_events:
                     try:
-                        channel    = bot.get_channel(CHANNEL_ID)
-                        role       = guild.get_role(ROLE_ID)
+                        channel    = bot.get_channel(get_cfg(guild.id, "channel_id"))
+                        role       = guild.get_role(get_cfg(guild.id, "role_id"))
                         event_link = f"https://discord.com/events/{guild.id}/{event.id}"
                         embed = discord.Embed(
                             title=f"⏰ {event.name} starts in 30 minutes!",
@@ -539,8 +607,8 @@ async def check_events():
                     try:
                         await event.start()
                         print(f"Event {event.name} started!")
-                        channel    = bot.get_channel(CHANNEL_ID)
-                        role       = guild.get_role(ROLE_ID)
+                        channel    = bot.get_channel(get_cfg(guild.id, "channel_id"))
+                        role       = guild.get_role(get_cfg(guild.id, "role_id"))
                         event_link = f"https://discord.com/events/{guild.id}/{event.id}"
                         embed = discord.Embed(
                             title=f"🟢 {event.name} has started!",
@@ -593,7 +661,7 @@ async def on_scheduled_event_update(before, after):
             name=after.name,
             description=after.description or "",
             start_time=datetime.now(tz=timezone.utc),
-            channel=guild.get_channel(EVENT_CHANNEL_ID),
+            channel=guild.get_channel(get_cfg(guild.id, "event_channel_id")),
             entity_type=discord.EntityType.voice,
             privacy_level=discord.PrivacyLevel.guild_only
         )
@@ -620,8 +688,13 @@ async def on_message(message):
     # Always process commands first so other commands still work
     await bot.process_commands(message)
 
+    # Forward to setup wizard if a setup is in progress for this guild
+    if message.guild and message.guild.id in pending_setups:
+        await on_message_setup(message)
+        return
+
     # Only react to messages in the game-links channel, not from the bot itself
-    if message.channel.id != GAME_LINKS_ID or message.author.bot:
+    if not message.guild or message.channel.id != get_cfg(message.guild.id, "game_links_id") or message.author.bot:
         return
 
     content_lower = message.content.lower()
@@ -639,6 +712,208 @@ async def on_message(message):
     if winner_names is not None:
         await message.add_reaction("✅")  # Confirm the game was recorded
         print(f"[auto] Game recorded from game-links post by {message.author.display_name}")
+
+
+# ─── Command: r!setup ────────────────────────────────────────────────────────
+# Interactive setup wizard for new servers.
+# Walks through all required channels and roles step by step.
+# Usage: r!setup
+
+SETUP_STEPS = [
+    ("channel_id",             "📋 **Registration Channel**\nMention the channel where event posts go (e.g. #register-for-scrim)"),
+    ("scrim_chat_id",          "💬 **Scrim Chat Channel**\nMention the channel that gets cleared after each scrim (e.g. #scrim-chat)"),
+    ("game_links_id",          "🔗 **Game Links Channel**\nMention the channel where winner messages are posted (e.g. #game-links)"),
+    ("leaderboard_channel_id", "🏆 **Leaderboard Channel**\nMention the channel where the leaderboard embed gets posted (e.g. #scrim-leaderboard)"),
+    ("event_channel_id",       "🔊 **Meeting Point Voice Channel**\nMention the voice channel that the bot joins to keep the event alive (e.g. #Meeting Point)\n> Tip: use `#` and start typing the voice channel name"),
+    ("role_id",                "✅ **Scrim Registration Role**\nMention the role players receive when they react ✅ (e.g. @Scrim Player)"),
+    ("active_role_id",         "🎮 **Active Scrim Role**\nMention the role given to players in game VCs (e.g. @Active Scrim)"),
+    ("spectator_role_id",      "👁️ **Spectator Role**\nMention the role given to players in the Meeting Point or unregistered players (e.g. @Spectator Scrim)"),
+    ("mention_roles",          "📣 **Ping Roles** (for event announcements)\nMention ALL roles that should be pinged when an event is created (e.g. @Scrim News @Everyone)\n> Separate multiple roles with spaces"),
+    ("allowed_roles",          "🔒 **Staff/Host Roles**\nMention ALL roles that are allowed to use bot commands (e.g. @Staff @Host)\n> Separate multiple roles with spaces"),
+]
+
+
+@bot.command()
+async def setup(ctx):
+    """Interactive setup wizard – walks through all required channels and roles."""
+    guild = ctx.guild
+
+    # Only admins can run setup
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("❌ Only server administrators can run `r!setup`.")
+        return
+
+    if is_configured(guild.id):
+        await ctx.send(
+            f"⚠️ This server already has a configuration.\n"
+            f"Use `r!setup reset` to start over, or `r!setupshow` to see current settings."
+        )
+        return
+
+    pending_setups[guild.id] = {"step": 0, "data": {}, "channel": ctx.channel.id, "user": ctx.author.id}
+
+    embed = discord.Embed(
+        title="⚙️ SCRIM Bot Setup",
+        description=(
+            "Welcome! I'll walk you through setting up the SCRIM Bot on this server.\n\n"
+            f"There are **{len(SETUP_STEPS)} steps**. For each step, just mention the channel or role.\n"
+            "Type `r!setup cancel` at any time to stop.\n\n"
+            "Let's start!"
+        ),
+        color=discord.Color.blurple()
+    )
+    await ctx.send(embed=embed)
+    await _send_setup_step(ctx.channel, guild.id)
+
+
+@bot.command(name="setupshow")
+async def setup_show(ctx):
+    """Shows the current configuration for this server."""
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("❌ Only administrators can view the server configuration.")
+        return
+
+    guild   = ctx.guild
+    configs = load_guild_configs()
+    cfg     = configs.get(str(guild.id), {})
+
+    if not cfg:
+        await ctx.send("⚠️ No configuration found for this server. Run `r!setup` to set it up.")
+        return
+
+    lines = []
+    key_labels = {
+        "channel_id":             "Registration Channel",
+        "scrim_chat_id":          "Scrim Chat",
+        "game_links_id":          "Game Links",
+        "leaderboard_channel_id": "Leaderboard",
+        "event_channel_id":       "Meeting Point VC",
+        "role_id":                "Scrim Registration Role",
+        "active_role_id":         "Active Scrim Role",
+        "spectator_role_id":      "Spectator Role",
+        "mention_roles":          "Ping Roles",
+        "allowed_roles":          "Staff/Host Roles",
+    }
+    for key, label in key_labels.items():
+        val = cfg.get(key, "_(using default)_")
+        if isinstance(val, list):
+            mentions = " ".join(f"<@&{v}>" for v in val)
+            lines.append(f"**{label}:** {mentions}")
+        elif key.endswith("_id") and isinstance(val, int):
+            if "channel" in key or key == "event_channel_id":
+                lines.append(f"**{label}:** <#{val}>")
+            else:
+                lines.append(f"**{label}:** <@&{val}>")
+        else:
+            lines.append(f"**{label}:** {val}")
+
+    embed = discord.Embed(title="⚙️ Server Configuration", description="\n".join(lines), color=discord.Color.blurple())
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="setupreset")
+async def setup_reset(ctx):
+    """Clears the configuration for this server so r!setup can be run again."""
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("❌ Only administrators can reset the configuration.")
+        return
+
+    configs = load_guild_configs()
+    gid     = str(ctx.guild.id)
+    if gid in configs:
+        del configs[gid]
+        save_guild_configs(configs)
+        await ctx.send("✅ Configuration cleared. Run `r!setup` to configure the bot again.")
+    else:
+        await ctx.send("⚠️ No configuration found for this server.")
+
+
+async def _send_setup_step(channel, guild_id):
+    """Send the prompt for the current setup step."""
+    state = pending_setups.get(guild_id)
+    if not state:
+        return
+    step_index = state["step"]
+    if step_index >= len(SETUP_STEPS):
+        return
+    key, prompt = SETUP_STEPS[step_index]
+    embed = discord.Embed(
+        title=f"Step {step_index + 1} of {len(SETUP_STEPS)}",
+        description=prompt,
+        color=discord.Color.blurple()
+    )
+    embed.set_footer(text="Mention the channel or role | r!setup cancel to stop")
+    await channel.send(embed=embed)
+
+
+@bot.event
+async def on_message_setup(message):
+    """Handles setup wizard responses – called from on_message."""
+    if message.author.bot:
+        return
+    guild_id = message.guild.id if message.guild else None
+    if not guild_id or guild_id not in pending_setups:
+        return
+
+    state = pending_setups[guild_id]
+
+    # Must be same channel and same user who started setup
+    if message.channel.id != state["channel"] or message.author.id != state["user"]:
+        return
+
+    # Cancel
+    if message.content.strip().lower() in ("r!setup cancel",):
+        del pending_setups[guild_id]
+        await message.channel.send("❌ Setup cancelled.")
+        return
+
+    step_index = state["step"]
+    key, _     = SETUP_STEPS[step_index]
+    is_list    = key in ("mention_roles", "allowed_roles")
+
+    # Parse roles or channels from mentions
+    if is_list:
+        ids = [r.id for r in message.role_mentions]
+        if not ids:
+            await message.channel.send("❌ No roles mentioned. Please mention at least one role (e.g. @Staff).")
+            return
+        state["data"][key] = ids
+    elif message.role_mentions:
+        state["data"][key] = message.role_mentions[0].id
+    elif message.channel_mentions:
+        state["data"][key] = message.channel_mentions[0].id
+    else:
+        # Try raw ID
+        raw = message.content.strip().strip("<#@&>")
+        if raw.isdigit():
+            state["data"][key] = int(raw)
+        else:
+            await message.channel.send("❌ Couldn't read that. Please mention the channel or role directly.")
+            return
+
+    state["step"] += 1
+
+    if state["step"] >= len(SETUP_STEPS):
+        # Save config
+        configs  = load_guild_configs()
+        gid      = str(guild_id)
+        configs[gid] = state["data"]
+        save_guild_configs(configs)
+        del pending_setups[guild_id]
+
+        embed = discord.Embed(
+            title="✅ Setup Complete!",
+            description=(
+                "The SCRIM Bot is now configured for this server.\n\n"
+                "Use `r!setupshow` to review your settings.\n"
+                "Use `r!cmd` to see all available commands.\n"
+                "Use `r!setupreset` to start over if needed."
+            ),
+            color=discord.Color.green()
+        )
+        await message.channel.send(embed=embed)
+    else:
+        await _send_setup_step(message.channel, guild_id)
 
 
 # ─── Command: r!game winner @player1 @player2 ... ────────────────────────────
@@ -723,7 +998,7 @@ async def game(ctx, subcommand: str = None, *, args=None):
     await ctx.send(embed=embed)
 
     # Post a winner announcement in the game-links channel
-    game_links_channel = bot.get_channel(GAME_LINKS_ID)
+    game_links_channel = bot.get_channel(get_cfg(guild.id, "game_links_id"))
     if game_links_channel:
         winner_mentions = " ".join(f"<@{uid}>" for uid in winner_ids)
         total_games = load_stats().get(str(next(iter(winner_ids))), {}).get("games_won", "?")
@@ -779,7 +1054,7 @@ async def create(ctx, *, args):
         return
 
     guild         = ctx.guild
-    event_channel = guild.get_channel(EVENT_CHANNEL_ID)
+    event_channel = guild.get_channel(get_cfg(guild.id, "event_channel_id"))
 
     if event_channel is None:
         await ctx.send("❌ Meeting Point channel not found!")
@@ -804,8 +1079,8 @@ async def create(ctx, *, args):
         return
 
     event_link = f"https://discord.com/events/{guild.id}/{event.id}"
-    channel    = bot.get_channel(CHANNEL_ID)
-    mentions   = " ".join(f"<@&{r}>" for r in MENTION_ROLES)
+    channel    = bot.get_channel(get_cfg(guild.id, "channel_id"))
+    mentions   = " ".join(f"<@&{r}>" for r in get_cfg(guild.id, "mention_roles"))
 
     embed = discord.Embed(title=title, description=description, url=event_link)
     embed.add_field(name="Date",  value=f"<t:{timestamp}:F>", inline=False)
@@ -850,10 +1125,10 @@ async def delete(ctx, *, args):
     await ctx.send("⏳ Deleting event, messages and roles...")
 
     guild              = ctx.guild
-    role               = guild.get_role(ROLE_ID)
-    register_channel   = bot.get_channel(CHANNEL_ID)
-    scrim_channel      = bot.get_channel(SCRIM_CHAT_ID)
-    game_links_channel = bot.get_channel(GAME_LINKS_ID)
+    role               = guild.get_role(get_cfg(guild.id, "role_id"))
+    register_channel   = bot.get_channel(get_cfg(guild.id, "channel_id"))
+    scrim_channel      = bot.get_channel(get_cfg(guild.id, "scrim_chat_id"))
+    game_links_channel = bot.get_channel(get_cfg(guild.id, "game_links_id"))
 
     # Find the currently active event
     active_event = None
@@ -1001,8 +1276,8 @@ async def cancel(ctx, *, args):
     await ctx.send("⏳ Cancelling event and deleting messages...")
 
     guild            = ctx.guild
-    role             = guild.get_role(ROLE_ID)
-    register_channel = bot.get_channel(CHANNEL_ID)
+    role             = guild.get_role(get_cfg(guild.id, "role_id"))
+    register_channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
 
     target_event = None
     try:
@@ -1085,9 +1360,9 @@ async def event(ctx, *, args):
         await ctx.send("⏳ Checking voice channels and assigning roles...")
 
         guild            = ctx.guild
-        active_role      = guild.get_role(ACTIVE_ROLE_ID)
-        spectator_role   = guild.get_role(SPECTATOR_ROLE_ID)
-        register_channel = bot.get_channel(CHANNEL_ID)
+        active_role      = guild.get_role(get_cfg(guild.id, "active_role_id"))
+        spectator_role   = guild.get_role(get_cfg(guild.id, "spectator_role_id"))
+        register_channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
 
         if active_role is None:
             await ctx.send("❌ Active Scrim role not found!")
@@ -1106,7 +1381,7 @@ async def event(ctx, *, args):
             for member in vc.members:
                 if member.bot:
                     continue
-                if vc.id == EVENT_CHANNEL_ID:
+                if vc.id == get_cfg(guild.id, "event_channel_id"):
                     members_in_meeting_point.add(member.id)
                 else:
                     members_in_other_vc.add(member.id)
@@ -1164,8 +1439,8 @@ async def event(ctx, *, args):
         await ctx.send("⏳ Scanning game links and updating leaderboard...")
 
         guild               = ctx.guild
-        game_links_channel  = bot.get_channel(GAME_LINKS_ID)
-        leaderboard_channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+        game_links_channel  = bot.get_channel(get_cfg(guild.id, "game_links_id"))
+        leaderboard_channel = bot.get_channel(get_cfg(guild.id, "leaderboard_channel_id"))
 
         leaderboard = load_leaderboard()
         games_found = 0
@@ -1218,7 +1493,7 @@ async def event(ctx, *, args):
         except Exception as e:
             await ctx.send(f"⚠️ Could not delete old leaderboard: `{e}`")
 
-        scrim_news_role = guild.get_role(MENTION_ROLES[1])
+        scrim_news_role = guild.get_role(get_cfg(guild.id, "mention_roles")[1])
         mention_content = scrim_news_role.mention if scrim_news_role else ""
 
         await leaderboard_channel.send(content=mention_content, embed=embed)
@@ -1238,7 +1513,7 @@ async def event(ctx, *, args):
 @has_allowed_role()
 async def join(ctx):
     guild   = ctx.guild
-    channel = guild.get_channel(EVENT_CHANNEL_ID)
+    channel = guild.get_channel(get_cfg(guild.id, "event_channel_id"))
 
     if channel is None:
         await ctx.send("❌ Meeting Point channel not found!")
@@ -1254,7 +1529,7 @@ async def join(ctx):
 
     vc = guild.voice_client
     if vc and vc.is_connected():
-        if vc.channel.id == EVENT_CHANNEL_ID:
+        if vc.channel.id == get_cfg(guild.id, "event_channel_id"):
             await ctx.send(f"✅ Already in 🔊 | **{channel.name}**!")
             return
         # Move to Meeting Point if in a different channel
@@ -1676,7 +1951,7 @@ async def on_raw_reaction_add(payload):
     if str(payload.emoji) != "✅":
         return
     guild  = bot.get_guild(payload.guild_id)
-    role   = guild.get_role(ROLE_ID)
+    role   = guild.get_role(get_cfg(guild.id, "role_id"))
     member = guild.get_member(payload.user_id)
     if member and not member.bot:
         await member.add_roles(role)
@@ -1692,8 +1967,8 @@ async def on_raw_reaction_remove(payload):
     if str(payload.emoji) != "✅":
         return
     guild   = bot.get_guild(payload.guild_id)
-    role    = guild.get_role(ROLE_ID)
-    channel = bot.get_channel(CHANNEL_ID)
+    role    = guild.get_role(get_cfg(guild.id, "role_id"))
+    channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
     member  = guild.get_member(payload.user_id)
     if member is None or member.bot:
         return
@@ -1742,9 +2017,9 @@ async def on_raw_message_delete(payload):
             break
     save_data(data)
 
-    channel               = bot.get_channel(CHANNEL_ID)
+    channel               = bot.get_channel(get_cfg(guild.id, "channel_id"))
     guild                 = channel.guild
-    role                  = guild.get_role(ROLE_ID)
+    role                  = guild.get_role(get_cfg(guild.id, "role_id"))
     remaining_message_ids = get_all_message_ids(data)
     reacted_ids           = await get_all_reacted_ids(channel, remaining_message_ids)
     await sync_roles(guild, role, reacted_ids)
