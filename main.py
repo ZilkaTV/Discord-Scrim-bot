@@ -724,7 +724,7 @@ SETUP_STEPS = [
     ("scrim_chat_id",          "💬 **Scrim Chat Channel**\nMention the channel that gets cleared after each scrim (e.g. #scrim-chat)"),
     ("game_links_id",          "🔗 **Game Links Channel**\nMention the channel where winner messages are posted (e.g. #game-links)"),
     ("leaderboard_channel_id", "🏆 **Leaderboard Channel**\nMention the channel where the leaderboard embed gets posted (e.g. #scrim-leaderboard)"),
-    ("event_channel_id",       "🔊 **Meeting Point Voice Channel**\nMention the voice channel that the bot joins to keep the event alive (e.g. #Meeting Point)\n> Tip: use `#` and start typing the voice channel name"),
+    ("event_channel_id",       "🔊 **Meeting Point Voice Channel**\nMention the voice channel that the bot joins to keep the event alive.\n> Voice channels can't be mentioned with # like text channels.\n> Use this format instead: `<#CHANNEL_ID>`\n> To get the ID: right-click the voice channel → Copy Channel ID, then type `<#` + the ID + `>`\n> Example: `<#1467091170176929968>`"),
     ("role_id",                "✅ **Scrim Registration Role**\nMention the role players receive when they react ✅ (e.g. @Scrim Player)"),
     ("active_role_id",         "🎮 **Active Scrim Role**\nMention the role given to players in game VCs (e.g. @Active Scrim)"),
     ("spectator_role_id",      "👁️ **Spectator Role**\nMention the role given to players in the Meeting Point or unregistered players (e.g. @Spectator Scrim)"),
@@ -794,16 +794,19 @@ async def setup_show(ctx):
         "mention_roles":          "Ping Roles",
         "allowed_roles":          "Staff/Host Roles",
     }
+    channel_keys = {"channel_id", "scrim_chat_id", "game_links_id", "leaderboard_channel_id", "event_channel_id"}
+    role_keys    = {"role_id", "active_role_id", "spectator_role_id"}
+    list_keys    = {"mention_roles", "allowed_roles"}
+
     for key, label in key_labels.items():
         val = cfg.get(key, "_(using default)_")
-        if isinstance(val, list):
+        if key in list_keys and isinstance(val, list):
             mentions = " ".join(f"<@&{v}>" for v in val)
             lines.append(f"**{label}:** {mentions}")
-        elif key.endswith("_id") and isinstance(val, int):
-            if "channel" in key or key == "event_channel_id":
-                lines.append(f"**{label}:** <#{val}>")
-            else:
-                lines.append(f"**{label}:** <@&{val}>")
+        elif key in channel_keys and isinstance(val, int):
+            lines.append(f"**{label}:** <#{val}>")
+        elif key in role_keys and isinstance(val, int):
+            lines.append(f"**{label}:** <@&{val}>")
         else:
             lines.append(f"**{label}:** {val}")
 
