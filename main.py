@@ -861,6 +861,10 @@ async def on_message_setup(message):
     if message.channel.id != state["channel"] or message.author.id != state["user"]:
         return
 
+    # Ignore bot commands so r!setup itself doesn't trigger the wizard
+    if message.content.strip().lower().startswith("r!"):
+        return
+
     # Cancel
     if message.content.strip().lower() in ("r!setup cancel",):
         del pending_setups[guild_id]
