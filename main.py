@@ -32,13 +32,17 @@ LEADERBOARD_CHANNEL_ID = 1466915479661842725   # Channel where the leaderboard e
 
 # ─── File Paths ───────────────────────────────────────────────────────────────
 # JSON files used for persistent storage between bot restarts.
+# DATA_DIR points to the Railway volume so files survive deployments.
+
+DATA_DIR         = "/app/data"
+os.makedirs(DATA_DIR, exist_ok=True)  # Create directory if it doesn't exist yet
 
 ALLOWED_ROLES    = [1466913409340543027, 1466913296597909682]  # Staff, Host – required for all commands except r!stats
 
-IDS_FILE         = "message_ids.json"   # Maps event ID → registration message ID
-LEADERBOARD_FILE = "leaderboard.json"   # Maps user ID → win count (legacy, kept for leaderboard cmd)
-STATS_FILE       = "stats.json"         # Maps user ID → full stats dict
-GUILD_CONFIGS_FILE = "guild_configs.json"  # Per-guild configuration (channels, roles)
+IDS_FILE           = os.path.join(DATA_DIR, "message_ids.json")
+LEADERBOARD_FILE   = os.path.join(DATA_DIR, "leaderboard.json")
+STATS_FILE         = os.path.join(DATA_DIR, "stats.json")
+GUILD_CONFIGS_FILE = os.path.join(DATA_DIR, "guild_configs.json")
 
 
 # ─── Runtime State ────────────────────────────────────────────────────────────
