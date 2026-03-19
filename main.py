@@ -2194,8 +2194,56 @@ async def slash_info(interaction: discord.Interaction):
 
 @bot.tree.command(name="cmd", description="Show all available commands")
 async def slash_cmd(interaction: discord.Interaction):
-    ctx = await commands.Context.from_interaction(interaction)
-    await cmd(ctx)
+    embed = discord.Embed(
+        title="[SCRIM] Bot — Commands",
+        color=discord.Color.blurple()
+    )
+
+    embed.add_field(name="⚙️ Setup", value=(
+        "`/setup` — Start the setup wizard (Admin only)\n"
+        "`/setupshow` — Show server configuration\n"
+        "`/setupreset` — Reset server configuration"
+    ), inline=False)
+
+    embed.add_field(name="📅 Event Management", value=(
+        "`/create` — Create an event & registration post\n"
+        "`/cancel_event` — Cancel a scheduled event\n"
+        "`/delete_event` — End scrim & full cleanup"
+    ), inline=False)
+
+    embed.add_field(name="🔊 Voice Channel", value=(
+        "`/join` — Bot joins Meeting Point VC\n"
+        "`/leave` — Bot leaves voice channel"
+    ), inline=False)
+
+    embed.add_field(name="🎮 Scrim Session", value=(
+        "`/event_update` — Assign roles, start auto-check\n"
+        "`/event_leaderboard` — Post updated leaderboard\n"
+        "`/stopupdate` — Stop auto-check & remove scrim roles"
+    ), inline=False)
+
+    embed.add_field(name="🏆 Game Tracking", value=(
+        "`/game_winner` — Log a game result manually\n"
+        "`/winner` — Add wins manually (mentions or IDs)\n"
+        "`/removewins` — Remove wins from a player"
+    ), inline=False)
+
+    embed.add_field(name="📊 Stats", value=(
+        "`/stats` — Your own or another player's stats\n"
+        "`/stats_top` — Top 10 by attendance rate"
+    ), inline=False)
+
+    embed.add_field(name="ℹ️ General", value=(
+        "`/info` — About this bot\n"
+        "`/cmd` — This command list"
+    ), inline=False)
+
+    embed.add_field(name="🔄 Workflow", value=(
+        "`/create` → `/join` → `/event_update` → log games → `/event_leaderboard` → `/delete_event`"
+    ), inline=False)
+
+    embed.set_footer(text="Staff & Host only • except /stats, /info, /cmd")
+    await interaction.response.send_message(embed=embed)
 
 
 # ─── Run Bot ──────────────────────────────────────────────────────────────────
