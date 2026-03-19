@@ -1,6 +1,7 @@
 import os
 import json
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from datetime import datetime, timezone
 
@@ -544,6 +545,13 @@ async def on_ready():
             print(f"[{guild.name}] Roles synced across {len(message_ids)} active message(s)")
         except Exception as e:
             print(f"[{guild.name}] Error during startup sync: {e}")
+
+    # Sync slash commands with Discord
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} slash command(s)")
+    except Exception as e:
+        print(f"Error syncing slash commands: {e}")
 
     # Start loops only if not already running
     if not check_events.is_running():
@@ -2035,6 +2043,159 @@ async def on_raw_message_delete(payload):
     reacted_ids           = await get_all_reacted_ids(channel, remaining_message_ids)
     await sync_roles(guild, role, reacted_ids)
     print(f"Roles resynced, now tracking {len(remaining_message_ids)} message(s)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SLASH COMMANDS  (/ prefix)
+# All commands here mirror the r! prefix commands above.
+# Both versions call the same internal logic.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def slash_has_role():
+    """app_commands check: user must have Staff or Host role."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        allowed = get_cfg(interaction.guild_id, "allowed_roles")
+        user_role_ids = [r.id for r in interaction.user.roles]
+        if any(r in user_role_ids for r in allowed):
+            return True
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+        return False
+    return app_commands.check(predicate)
+
+
+# ── Setup ──────────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="setup", description="Start the interactive setup wizard for this server (Admin only)")
+async def slash_setup(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await setup(ctx)
+
+@bot.tree.command(name="setupshow", description="Show the current bot configuration for this server")
+async def slash_setupshow(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await setup_show(ctx)
+
+@bot.tree.command(name="setupreset", description="Clear the server configuration so setup can be run again")
+async def slash_setupreset(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await setup_reset(ctx)
+
+
+# ── Event Management ───────────────────────────────────────────────────────────
+
+@bot.tree.command(name="create", description="Create a scrim event and post the registration message")
+@slash_has_role()
+@app_commands.describe(
+    title="Event title (e.g. Friday Scrim)",
+    description="Short description (e.g. Competitive 5v5)",
+    timestamp="Discord timestamp — generate at discordtimestamp.com (e.g. <t:1700000000:R>)"
+)
+async def slash_create(interaction: discord.Interaction, title: str, description: str, timestamp: str):
+    ctx = await commands.Context.from_interaction(interaction)
+    await create(ctx, args=f"{title}, {description}, {timestamp}")
+
+@bot.tree.command(name="delete_event", description="End the scrim and run full cleanup")
+@slash_has_role()
+async def slash_delete(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await delete(ctx, args="event")
+
+@bot.tree.command(name="cancel_event", description="Cancel a scheduled event that hasn't started yet")
+@slash_has_role()
+@app_commands.describe(event_id="The Discord Event ID (right-click event → Copy Event Link → last number)")
+async def slash_cancel(interaction: discord.Interaction, event_id: str):
+    ctx = await commands.Context.from_interaction(interaction)
+    await cancel(ctx, args=f"event, {event_id}")
+
+
+# ── Voice ──────────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="join", description="Bot joins the Meeting Point voice channel")
+@slash_has_role()
+async def slash_join(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await join(ctx)
+
+@bot.tree.command(name="leave", description="Bot leaves the voice channel it's currently in")
+@slash_has_role()
+async def slash_leave(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await leave(ctx)
+
+
+# ── Scrim Session ──────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="event_update", description="Assign Active/Spectator roles and start auto VC check")
+@slash_has_role()
+async def slash_event_update(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await event(ctx, args="update")
+
+@bot.tree.command(name="event_leaderboard", description="Scan game-links and post the updated leaderboard")
+@slash_has_role()
+async def slash_event_leaderboard(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await event(ctx, args="leaderboard")
+
+@bot.tree.command(name="stopupdate", description="Stop auto VC check and remove Active/Spectator roles")
+@slash_has_role()
+async def slash_stopupdate(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await stopupdate(ctx)
+
+
+# ── Game Tracking ──────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="game_winner", description="Log a game result — mentioned players are winners")
+@slash_has_role()
+@app_commands.describe(players="Mention all winners (e.g. @PlayerA @PlayerB)")
+async def slash_game_winner(interaction: discord.Interaction, players: str):
+    ctx = await commands.Context.from_interaction(interaction)
+    await game(ctx, subcommand="winner", args=players)
+
+@bot.tree.command(name="winner", description="Manually add a win to one or more players")
+@slash_has_role()
+@app_commands.describe(players="Mention players or paste User IDs separated by spaces")
+async def slash_winner(interaction: discord.Interaction, players: str):
+    ctx = await commands.Context.from_interaction(interaction)
+    await winner(ctx, args=players)
+
+@bot.tree.command(name="removewins", description="Remove wins from a player")
+@slash_has_role()
+@app_commands.describe(
+    player="Mention the player or paste their User ID",
+    amount="Number of wins to remove (default: 1)"
+)
+async def slash_removewins(interaction: discord.Interaction, player: str, amount: int = 1):
+    ctx = await commands.Context.from_interaction(interaction)
+    await removewins(ctx, args=f"{player} {amount}")
+
+
+# ── Stats ──────────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="stats", description="Show player stats")
+@app_commands.describe(player="Mention a player to see their stats, or leave empty for your own")
+async def slash_stats(interaction: discord.Interaction, player: str = None):
+    ctx = await commands.Context.from_interaction(interaction)
+    await stats(ctx, args=player)
+
+@bot.tree.command(name="stats_top", description="Show the top 10 players by attendance rate")
+async def slash_stats_top(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await stats(ctx, args="top")
+
+
+# ── General ────────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="info", description="What the SCRIM Bot does and how it works")
+async def slash_info(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await info(ctx)
+
+@bot.tree.command(name="cmd", description="Show all available commands")
+async def slash_cmd(interaction: discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    await cmd(ctx)
 
 
 # ─── Run Bot ──────────────────────────────────────────────────────────────────
