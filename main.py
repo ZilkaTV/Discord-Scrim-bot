@@ -2039,8 +2039,12 @@ async def on_raw_message_delete(payload):
             break
     save_data(data)
 
+    guild                 = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
     channel               = bot.get_channel(get_cfg(guild.id, "channel_id"))
-    guild                 = channel.guild
+    if channel is None:
+        return
     role                  = guild.get_role(get_cfg(guild.id, "role_id"))
     remaining_message_ids = get_all_message_ids(data)
     reacted_ids           = await get_all_reacted_ids(channel, remaining_message_ids)
@@ -2155,9 +2159,19 @@ async def slash_event_leaderboard(interaction: discord.Interaction):
 @bot.tree.command(name="stopupdate", description="Stop auto VC check and remove Active/Spectator roles")
 @slash_has_role()
 async def slash_stopupdate(interaction: discord.Interaction):
+    global scrim_active, current_game_participants
+
+    if not scrim_active:
+        await interaction.response.send_message("⚠️ Auto-check is not currently active.", ephemeral=True)
+        return
+
     await interaction.response.defer()
-    ctx = await commands.Context.from_interaction(interaction)
-    await stopupdate(ctx)
+    guild = interaction.guild
+    scrim_active              = False
+    current_game_participants = set()
+    await remove_active_role_all(guild)
+    await remove_spectator_role_all(guild)
+    await interaction.followup.send("✅ Auto VC check stopped. Active Scrim & Spectator roles removed. Participant tracking reset.\nThe event is still active – use `/delete_event` to fully end the scrim.")
 
 
 # ── Game Tracking ──────────────────────────────────────────────────────────────
