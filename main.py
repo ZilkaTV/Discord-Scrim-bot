@@ -70,8 +70,11 @@ bot = commands.Bot(command_prefix="r!", intents=intents, case_insensitive=True)
 # r!stats is excluded and remains open to everyone.
 
 def has_allowed_role():
-    """Returns a command check that passes only if the user has Staff or Host role (per guild config)."""
+    """Returns a command check that passes only if the user has Staff or Host role (per guild config).
+    Server administrators always pass regardless of roles."""
     async def predicate(ctx):
+        if ctx.author.guild_permissions.administrator:
+            return True
         guild_allowed = get_cfg(ctx.guild.id, "allowed_roles")
         user_role_ids = [r.id for r in ctx.author.roles]
         if any(role_id in user_role_ids for role_id in guild_allowed):
@@ -2052,8 +2055,10 @@ async def on_raw_message_delete(payload):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def slash_has_role():
-    """app_commands check: user must have Staff or Host role."""
+    """app_commands check: user must have Staff or Host role, or be a server administrator."""
     async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
         allowed = get_cfg(interaction.guild_id, "allowed_roles")
         user_role_ids = [r.id for r in interaction.user.roles]
         if any(r in user_role_ids for r in allowed):
@@ -2067,16 +2072,19 @@ def slash_has_role():
 
 @bot.tree.command(name="setup", description="Start the interactive setup wizard for this server (Admin only)")
 async def slash_setup(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await setup(ctx)
 
 @bot.tree.command(name="setupshow", description="Show the current bot configuration for this server")
 async def slash_setupshow(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await setup_show(ctx)
 
 @bot.tree.command(name="setupreset", description="Clear the server configuration so setup can be run again")
 async def slash_setupreset(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await setup_reset(ctx)
 
@@ -2091,12 +2099,14 @@ async def slash_setupreset(interaction: discord.Interaction):
     timestamp="Discord timestamp — generate at discordtimestamp.com (e.g. <t:1700000000:R>)"
 )
 async def slash_create(interaction: discord.Interaction, title: str, description: str, timestamp: str):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await create(ctx, args=f"{title}, {description}, {timestamp}")
 
 @bot.tree.command(name="delete_event", description="End the scrim and run full cleanup")
 @slash_has_role()
 async def slash_delete(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await delete(ctx, args="event")
 
@@ -2104,6 +2114,7 @@ async def slash_delete(interaction: discord.Interaction):
 @slash_has_role()
 @app_commands.describe(event_id="The Discord Event ID (right-click event → Copy Event Link → last number)")
 async def slash_cancel(interaction: discord.Interaction, event_id: str):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await cancel(ctx, args=f"event, {event_id}")
 
@@ -2113,12 +2124,14 @@ async def slash_cancel(interaction: discord.Interaction, event_id: str):
 @bot.tree.command(name="join", description="Bot joins the Meeting Point voice channel")
 @slash_has_role()
 async def slash_join(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await join(ctx)
 
 @bot.tree.command(name="leave", description="Bot leaves the voice channel it's currently in")
 @slash_has_role()
 async def slash_leave(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await leave(ctx)
 
@@ -2128,18 +2141,21 @@ async def slash_leave(interaction: discord.Interaction):
 @bot.tree.command(name="event_update", description="Assign Active/Spectator roles and start auto VC check")
 @slash_has_role()
 async def slash_event_update(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await event(ctx, args="update")
 
 @bot.tree.command(name="event_leaderboard", description="Scan game-links and post the updated leaderboard")
 @slash_has_role()
 async def slash_event_leaderboard(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await event(ctx, args="leaderboard")
 
 @bot.tree.command(name="stopupdate", description="Stop auto VC check and remove Active/Spectator roles")
 @slash_has_role()
 async def slash_stopupdate(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await stopupdate(ctx)
 
@@ -2150,6 +2166,7 @@ async def slash_stopupdate(interaction: discord.Interaction):
 @slash_has_role()
 @app_commands.describe(players="Mention all winners (e.g. @PlayerA @PlayerB)")
 async def slash_game_winner(interaction: discord.Interaction, players: str):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await game(ctx, subcommand="winner", args=players)
 
@@ -2157,6 +2174,7 @@ async def slash_game_winner(interaction: discord.Interaction, players: str):
 @slash_has_role()
 @app_commands.describe(players="Mention players or paste User IDs separated by spaces")
 async def slash_winner(interaction: discord.Interaction, players: str):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await winner(ctx, args=players)
 
@@ -2167,6 +2185,7 @@ async def slash_winner(interaction: discord.Interaction, players: str):
     amount="Number of wins to remove (default: 1)"
 )
 async def slash_removewins(interaction: discord.Interaction, player: str, amount: int = 1):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await removewins(ctx, args=f"{player} {amount}")
 
@@ -2176,11 +2195,13 @@ async def slash_removewins(interaction: discord.Interaction, player: str, amount
 @bot.tree.command(name="stats", description="Show player stats")
 @app_commands.describe(player="Mention a player to see their stats, or leave empty for your own")
 async def slash_stats(interaction: discord.Interaction, player: str = None):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await stats(ctx, args=player)
 
 @bot.tree.command(name="stats_top", description="Show the top 10 players by attendance rate")
 async def slash_stats_top(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await stats(ctx, args="top")
 
@@ -2189,6 +2210,7 @@ async def slash_stats_top(interaction: discord.Interaction):
 
 @bot.tree.command(name="info", description="What the SCRIM Bot does and how it works")
 async def slash_info(interaction: discord.Interaction):
+    await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await info(ctx)
 
