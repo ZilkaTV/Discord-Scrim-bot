@@ -44,6 +44,7 @@ IDS_FILE           = os.path.join(DATA_DIR, "message_ids.json")
 LEADERBOARD_FILE   = os.path.join(DATA_DIR, "leaderboard.json")
 STATS_FILE         = os.path.join(DATA_DIR, "stats.json")
 GUILD_CONFIGS_FILE = os.path.join(DATA_DIR, "guild_configs.json")
+SEASON_FILE        = os.path.join(DATA_DIR, "season_stats.json")  # All-time accumulated stats across quarters
 
 
 # ─── Runtime State ────────────────────────────────────────────────────────────
@@ -188,6 +189,32 @@ def save_stats(data: dict):
     """Write the given dict to stats.json."""
     with open(STATS_FILE, "w") as f:
         json.dump(data, f)
+
+
+def load_season() -> dict:
+    """Load season_stats.json → {user_id: {wins, games_played, quarter_history}}. Returns {} if missing."""
+    if os.path.exists(SEASON_FILE):
+        with open(SEASON_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_season(data: dict):
+    """Write the given dict to season_stats.json."""
+    with open(SEASON_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def get_or_create_season(season: dict, user_id) -> dict:
+    """Return the all-time season entry for a user, creating a default if missing."""
+    user_id = str(user_id)
+    if user_id not in season or not isinstance(season[user_id], dict):
+        season[user_id] = {"wins": 0, "games_played": 0, "quarters": []}
+    else:
+        for field, default in [("wins", 0), ("games_played", 0), ("quarters", [])]:
+            if field not in season[user_id]:
+                season[user_id][field] = default
+    return season[user_id]
 
 
 def get_or_create_stats(stats: dict, user_id) -> dict:
@@ -1463,11 +1490,11 @@ async def event(ctx, *, args):
         guild               = ctx.guild
         game_links_channel  = bot.get_channel(get_cfg(guild.id, "game_links_id"))
         leaderboard_channel = bot.get_channel(get_cfg(guild.id, "leaderboard_channel_id"))
+        stats               = load_stats()
+        leaderboard         = load_leaderboard()
+        games_found         = 0
 
-        leaderboard = load_leaderboard()
-        games_found = 0
-
-        # Count wins: any message containing "winner" + a user mention counts as one game
+        # Count wins from game-links messages
         async for message in game_links_channel.history(limit=200):
             content_lower = message.content.lower()
             if "winner" in content_lower and message.mentions:
@@ -1487,27 +1514,55 @@ async def event(ctx, *, args):
 
         save_leaderboard(leaderboard)
 
-        sorted_lb   = sorted(leaderboard.items(), key=lambda x: x[1], reverse=True)
-        medals      = ["🥇", "🥈", "🥉"]
-        description = ""
-        for i, (user_id, points) in enumerate(sorted_lb):
-            member = guild.get_member(int(user_id))
-            name   = member.mention if member else f"<@{user_id}>"
-            if i < 3:
-                prefix = medals[i]
-            elif points >= 3:
-                prefix = "🏅"
-            else:
-                prefix = "▪️"
-            description += f"{prefix} {name} **{points} Point{'s' if points != 1 else ''}**\n"
+        def build_lb_description(entries, guild):
+            medals = ["🥇", "🥈", "🥉"]
+            lines = []
+            for i, (user_id, wins, games) in enumerate(entries):
+                member   = guild.get_member(int(user_id))
+                name     = member.display_name if member else f"<@{user_id}>"
+                winrate  = f"{(wins/games*100):.0f}%" if games > 0 else "0%"
+                prefix   = medals[i] if i < 3 else ("🏅" if wins >= 3 else "▪️")
+                lines.append(f"{prefix} **{name}** — {wins} pts · {winrate} WR · {games} games")
+            return "\n".join(lines) if lines else "No data yet."
 
-        embed = discord.Embed(
-            title="Scrim - Leaderboard 🏆",
-            description=description,
+        # ── Quarter embed ──────────────────────────────────────────────────────
+        quarter_entries = []
+        for uid, wins in leaderboard.items():
+            user_stats  = get_or_create_stats(stats, uid)
+            games       = user_stats.get("games_played", 0)
+            quarter_entries.append((uid, wins, games))
+        quarter_entries.sort(key=lambda x: x[1], reverse=True)
+        quarter_entries = quarter_entries[:15]
+
+        quarter_embed = discord.Embed(
+            title="📊 Current Quarter — Leaderboard",
+            description=build_lb_description(quarter_entries, guild),
             color=discord.Color.gold()
         )
+        quarter_embed.set_footer(text="Points · Winrate · Games Played")
 
-        # Delete the previous leaderboard embed before posting a fresh one
+        # ── All-time embed ─────────────────────────────────────────────────────
+        season = load_season()
+        alltime_entries = []
+        for uid, sdata in season.items():
+            if isinstance(sdata, dict):
+                alltime_entries.append((uid, sdata.get("wins", 0), sdata.get("games_played", 0)))
+        alltime_entries.sort(key=lambda x: x[1], reverse=True)
+        alltime_entries = alltime_entries[:15]
+
+        if alltime_entries:
+            alltime_desc = build_lb_description(alltime_entries, guild)
+        else:
+            alltime_desc = "No all-time data yet. Use `r!season reset` at the end of a quarter to save results."
+
+        alltime_embed = discord.Embed(
+            title="🏆 All-Time — Overall Leaderboard",
+            description=alltime_desc,
+            color=discord.Color.blurple()
+        )
+        alltime_embed.set_footer(text="Accumulated across all quarters")
+
+        # Delete old leaderboard embeds and post fresh ones
         try:
             async for old_msg in leaderboard_channel.history(limit=20):
                 if old_msg.author == bot.user:
@@ -1518,7 +1573,8 @@ async def event(ctx, *, args):
         scrim_news_role = guild.get_role(get_cfg(guild.id, "mention_roles")[1])
         mention_content = scrim_news_role.mention if scrim_news_role else ""
 
-        await leaderboard_channel.send(content=mention_content, embed=embed)
+        await leaderboard_channel.send(content=mention_content, embed=quarter_embed)
+        await leaderboard_channel.send(embed=alltime_embed)
         await ctx.send(f"✅ Leaderboard updated! Found **{games_found}** game(s) with winners.")
 
     else:
@@ -1858,6 +1914,109 @@ async def cmd(ctx):
 
     embed.set_footer(text="Staff & Host only • except r!stats, r!info, r!cmd")
     await ctx.send(embed=embed)
+
+
+# ─── Command: r!season ───────────────────────────────────────────────────────
+# Manages quarterly resets and the all-time leaderboard.
+# Usage:
+#   r!season reset Q2 2026   → saves current stats to all-time, then resets
+#   r!season show            → shows the all-time leaderboard in chat
+
+@bot.command()
+@has_allowed_role()
+async def season(ctx, subcommand: str = None, *, args=None):
+    guild = ctx.guild
+
+    if subcommand is None:
+        await ctx.send("❌ Usage: `r!season reset Q2 2026` or `r!season show`")
+        return
+
+    if subcommand.lower() == "show":
+        season_data = load_season()
+        if not season_data:
+            await ctx.send("⚠️ No all-time data yet. Run `r!season reset` at the end of a quarter to save results.")
+            return
+
+        medals  = ["🥇", "🥈", "🥉"]
+        entries = []
+        for uid, sdata in season_data.items():
+            if isinstance(sdata, dict):
+                entries.append((uid, sdata.get("wins", 0), sdata.get("games_played", 0)))
+        entries.sort(key=lambda x: x[1], reverse=True)
+
+        lines = []
+        for i, (uid, wins, games) in enumerate(entries[:15]):
+            member  = guild.get_member(int(uid))
+            name    = member.display_name if member else f"<@{uid}>"
+            winrate = f"{(wins/games*100):.0f}%" if games > 0 else "0%"
+            prefix  = medals[i] if i < 3 else ("🏅" if wins >= 3 else "▪️")
+            lines.append(f"{prefix} **{name}** — {wins} pts · {winrate} WR · {games} games")
+
+        embed = discord.Embed(
+            title="🏆 All-Time Overall Leaderboard",
+            description="\n".join(lines),
+            color=discord.Color.blurple()
+        )
+        embed.set_footer(text="Accumulated across all quarters")
+        await ctx.send(embed=embed)
+        return
+
+    if subcommand.lower() == "reset":
+        quarter_name = args.strip() if args else "Unknown Quarter"
+
+        await ctx.send(f"⏳ Saving current quarter **{quarter_name}** to all-time stats and resetting...")
+
+        stats       = load_stats()
+        leaderboard = load_leaderboard()
+        season_data = load_season()
+
+        # Merge current quarter into all-time
+        for uid, wins in leaderboard.items():
+            user_stats  = get_or_create_stats(stats, uid)
+            games       = user_stats.get("games_played", 0)
+            season_entry = get_or_create_season(season_data, uid)
+            season_entry["wins"]         += wins
+            season_entry["games_played"] += games
+            season_entry["quarters"].append({
+                "name":         quarter_name,
+                "wins":         wins,
+                "games_played": games,
+                "winrate":      f"{(wins/games*100):.1f}%" if games > 0 else "0%"
+            })
+
+        save_season(season_data)
+
+        # Reset current quarter stats
+        for uid in stats:
+            if isinstance(stats[uid], dict):
+                stats[uid]["games_played"] = 0
+                stats[uid]["games_won"]    = 0
+                stats[uid]["win_streak"]   = 0
+                stats[uid]["registered"]   = 0
+                stats[uid]["attended"]     = 0
+                # best_streak is kept intentionally
+
+        save_stats(stats)
+
+        # Reset leaderboard
+        empty_lb = {}
+        save_leaderboard(empty_lb)
+
+        embed = discord.Embed(
+            title=f"✅ Quarter Reset — {quarter_name}",
+            description=(
+                f"All stats from **{quarter_name}** have been saved to the all-time leaderboard.\n"
+                f"Current quarter stats and points have been reset to 0.\n\n"
+                f"Use `r!event leaderboard` after the next scrim to see the new standings.\n"
+                f"Use `r!season show` to view the all-time leaderboard."
+            ),
+            color=discord.Color.green()
+        )
+        embed.set_footer(text=f"Reset by {ctx.author.display_name}")
+        await ctx.send(embed=embed)
+
+    else:
+        await ctx.send("❌ Unknown subcommand! Use `r!season reset Q2 2026` or `r!season show`")
 
 
 # ─── Command: r!stats ────────────────────────────────────────────────────────
@@ -2218,6 +2377,23 @@ async def slash_stats_top(interaction: discord.Interaction):
     await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await stats(ctx, args="top")
+
+
+# ── Season ─────────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="season_reset", description="Save current quarter to all-time stats and reset for new quarter")
+@slash_has_role()
+@app_commands.describe(quarter="Quarter name (e.g. Q2 2026)")
+async def slash_season_reset(interaction: discord.Interaction, quarter: str):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await season(ctx, subcommand="reset", args=quarter)
+
+@bot.tree.command(name="season_show", description="Show the all-time overall leaderboard")
+async def slash_season_show(interaction: discord.Interaction):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await season(ctx, subcommand="show")
 
 
 # ── General ────────────────────────────────────────────────────────────────────
