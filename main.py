@@ -391,7 +391,8 @@ async def update_scrim_vc_roles(guild):
     scrim_role     = guild.get_role(get_cfg(guild.id, "role_id"))
 
     if not active_role or not spectator_role or not scrim_role:
-        print("Active, Spectator or Scrim registration role not found!")
+        print(f"[update_scrim_vc_roles] Role not found! active={active_role} spectator={spectator_role} scrim={scrim_role}")
+        print(f"[update_scrim_vc_roles] Config: active_role_id={get_cfg(guild.id,'active_role_id')} spectator_role_id={get_cfg(guild.id,'spectator_role_id')} role_id={get_cfg(guild.id,'role_id')}")
         return
 
     members_in_meeting_point = set()
@@ -429,6 +430,8 @@ async def update_scrim_vc_roles(guild):
         member = guild.get_member(member_id)
         if not member:
             continue
+        has_scrim = scrim_role in member.roles
+        print(f"[vc_roles] {member.display_name} in game VC | has_scrim_role={has_scrim}")
         if scrim_role in member.roles:
             # Registered → Active Scrim
             if active_role not in member.roles:
@@ -1570,7 +1573,8 @@ async def event(ctx, *, args):
         except Exception as e:
             await ctx.send(f"⚠️ Could not delete old leaderboard: `{e}`")
 
-        scrim_news_role = guild.get_role(get_cfg(guild.id, "mention_roles")[1])
+        mention_roles   = get_cfg(guild.id, "mention_roles")
+        scrim_news_role = guild.get_role(mention_roles[-1]) if mention_roles else None
         mention_content = scrim_news_role.mention if scrim_news_role else ""
 
         await leaderboard_channel.send(content=mention_content, embed=quarter_embed)
