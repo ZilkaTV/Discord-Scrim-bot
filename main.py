@@ -41,10 +41,19 @@ os.makedirs(DATA_DIR, exist_ok=True)  # Create directory if it doesn't exist yet
 ALLOWED_ROLES    = [1466913409340543027, 1466913296597909682]  # Staff, Host – required for all commands except r!stats
 
 IDS_FILE           = os.path.join(DATA_DIR, "message_ids.json")
+GUILD_CONFIGS_FILE = os.path.join(DATA_DIR, "guild_configs.json")
+
+# Per-guild file helpers – each server gets its own data files
+def guild_file(guild_id, name):
+    """Returns the path to a guild-specific data file."""
+    guild_dir = os.path.join(DATA_DIR, str(guild_id))
+    os.makedirs(guild_dir, exist_ok=True)
+    return os.path.join(guild_dir, name)
+
+# Legacy paths (main server fallback – kept so existing data is not lost)
 LEADERBOARD_FILE   = os.path.join(DATA_DIR, "leaderboard.json")
 STATS_FILE         = os.path.join(DATA_DIR, "stats.json")
-GUILD_CONFIGS_FILE = os.path.join(DATA_DIR, "guild_configs.json")
-SEASON_FILE        = os.path.join(DATA_DIR, "season_stats.json")  # All-time accumulated stats across quarters
+SEASON_FILE        = os.path.join(DATA_DIR, "season_stats.json")
 
 
 # ─── Runtime State ────────────────────────────────────────────────────────────
@@ -163,45 +172,54 @@ def get_all_message_ids(data: dict) -> set:
     return set(data.values())
 
 
-def load_leaderboard() -> dict:
-    """Load leaderboard.json → {user_id: win_count}. Returns {} if file doesn't exist."""
-    if os.path.exists(LEADERBOARD_FILE):
-        with open(LEADERBOARD_FILE, "r") as f:
+def load_leaderboard(guild_id=None) -> dict:
+    """Load leaderboard for a specific guild, or the legacy global file."""
+    path = guild_file(guild_id, "leaderboard.json") if guild_id else LEADERBOARD_FILE
+    if os.path.exists(path):
+        with open(path, "r") as f:
             return json.load(f)
+    # Fallback: if per-guild file missing, try legacy global file
+    if guild_id and os.path.exists(LEADERBOARD_FILE):
+        return {}  # Don't migrate old data – start fresh per guild
     return {}
 
 
-def save_leaderboard(data: dict):
-    """Write the given dict to leaderboard.json."""
-    with open(LEADERBOARD_FILE, "w") as f:
+def save_leaderboard(data: dict, guild_id=None):
+    """Write leaderboard for a specific guild, or the legacy global file."""
+    path = guild_file(guild_id, "leaderboard.json") if guild_id else LEADERBOARD_FILE
+    with open(path, "w") as f:
         json.dump(data, f)
 
 
-def load_stats() -> dict:
-    """Load stats.json → {user_id: stats_dict}. Returns {} if file doesn't exist."""
-    if os.path.exists(STATS_FILE):
-        with open(STATS_FILE, "r") as f:
+def load_stats(guild_id=None) -> dict:
+    """Load stats for a specific guild, or the legacy global file."""
+    path = guild_file(guild_id, "stats.json") if guild_id else STATS_FILE
+    if os.path.exists(path):
+        with open(path, "r") as f:
             return json.load(f)
     return {}
 
 
-def save_stats(data: dict):
-    """Write the given dict to stats.json."""
-    with open(STATS_FILE, "w") as f:
+def save_stats(data: dict, guild_id=None):
+    """Write stats for a specific guild, or the legacy global file."""
+    path = guild_file(guild_id, "stats.json") if guild_id else STATS_FILE
+    with open(path, "w") as f:
         json.dump(data, f)
 
 
-def load_season() -> dict:
-    """Load season_stats.json → {user_id: {wins, games_played, quarter_history}}. Returns {} if missing."""
-    if os.path.exists(SEASON_FILE):
-        with open(SEASON_FILE, "r") as f:
+def load_season(guild_id=None) -> dict:
+    """Load season stats for a specific guild, or the legacy global file."""
+    path = guild_file(guild_id, "season_stats.json") if guild_id else SEASON_FILE
+    if os.path.exists(path):
+        with open(path, "r") as f:
             return json.load(f)
     return {}
 
 
-def save_season(data: dict):
-    """Write the given dict to season_stats.json."""
-    with open(SEASON_FILE, "w") as f:
+def save_season(data: dict, guild_id=None):
+    """Write season stats for a specific guild, or the legacy global file."""
+    path = guild_file(guild_id, "season_stats.json") if guild_id else SEASON_FILE
+    with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 
@@ -501,8 +519,8 @@ async def log_game(guild, winner_ids: set, source: str = "manual"):
         print(f"[log_game] No participants tracked yet, skipping ({source})")
         return None
 
-    stats      = load_stats()
-    leaderboard = load_leaderboard()
+    stats      = load_stats(guild.id)
+    leaderboard = load_leaderboard(guild.id)
 
     for user_id in current_game_participants:
         uid_str    = str(user_id)
@@ -519,8 +537,8 @@ async def log_game(guild, winner_ids: set, source: str = "manual"):
         else:
             user_stats["win_streak"] = 0  # Loss or no-show breaks the streak
 
-    save_stats(stats)
-    save_leaderboard(leaderboard)
+    save_stats(stats, guild.id)
+    save_leaderboard(leaderboard, guild.id)
 
     winner_names = []
     for uid in winner_ids:
@@ -1005,7 +1023,7 @@ async def game(ctx, subcommand: str = None, *, args=None):
         await ctx.send("⚠️ Game could not be logged, no participants tracked.")
         return
 
-    stats = load_stats()
+    stats = load_stats(guild.id)
     loser_names = []
     for uid in current_game_participants:
         if uid not in winner_ids:
@@ -1053,11 +1071,11 @@ async def game(ctx, subcommand: str = None, *, args=None):
     game_links_channel = bot.get_channel(get_cfg(guild.id, "game_links_id"))
     if game_links_channel:
         winner_mentions = " ".join(f"<@{uid}>" for uid in winner_ids)
-        total_games = load_stats().get(str(next(iter(winner_ids))), {}).get("games_won", "?")
+        total_games = load_stats(guild.id).get(str(next(iter(winner_ids))), {}).get("games_won", "?")
         streak_parts = []
         for uid in winner_ids:
             uid_str    = str(uid)
-            user_stats = load_stats().get(uid_str, {})
+            user_stats = load_stats(guild.id).get(uid_str, {})
             streak     = user_stats.get("win_streak", 0)
             fire       = " 🔥" if streak >= 3 else ""
             member     = ctx.guild.get_member(uid)
@@ -1444,14 +1462,14 @@ async def event(ctx, *, args):
         reacted_ids = await get_all_reacted_ids(register_channel, message_ids)
         all_in_vc   = members_in_meeting_point | members_in_other_vc
 
-        stats = load_stats()
+        stats = load_stats(guild.id)
         for user_id in reacted_ids:
             uid_str    = str(user_id)
             user_stats = get_or_create_stats(stats, uid_str)
             user_stats["registered"] += 1
             if user_id in all_in_vc:
                 user_stats["attended"] += 1
-        save_stats(stats)
+        save_stats(stats, guild.id)
 
         # Assign Active / Spectator roles based on current VC positions
         # (also populates current_game_participants with players in game VCs)
@@ -1493,8 +1511,8 @@ async def event(ctx, *, args):
         guild               = ctx.guild
         game_links_channel  = bot.get_channel(get_cfg(guild.id, "game_links_id"))
         leaderboard_channel = bot.get_channel(get_cfg(guild.id, "leaderboard_channel_id"))
-        stats               = load_stats()
-        leaderboard         = load_leaderboard()
+        stats               = load_stats(guild.id)
+        leaderboard         = load_leaderboard(guild.id)
         games_found         = 0
 
         # Count wins from game-links messages
@@ -1515,7 +1533,7 @@ async def event(ctx, *, args):
             )
             return
 
-        save_leaderboard(leaderboard)
+        save_leaderboard(leaderboard, guild.id)
 
         def build_lb_description(entries, guild):
             medals = ["🥇", "🥈", "🥉"]
@@ -1523,9 +1541,11 @@ async def event(ctx, *, args):
             for i, (user_id, wins, games) in enumerate(entries):
                 member   = guild.get_member(int(user_id))
                 name     = member.display_name if member else f"<@{user_id}>"
-                winrate  = f"{(wins/games*100):.0f}%" if games > 0 else "0%"
+                # games_played must be at least as high as wins to avoid >100% winrate
+                effective_games = max(games, wins)
+                winrate  = f"{min((wins/effective_games*100), 100):.0f}%" if effective_games > 0 else "0%"
                 prefix   = medals[i] if i < 3 else ("🏅" if wins >= 3 else "▪️")
-                lines.append(f"{prefix} **{name}** — {wins} pts · {winrate} WR · {games} games")
+                lines.append(f"{prefix} **{name}** — {wins} pts · {winrate} WR · {effective_games} games")
             return "\n".join(lines) if lines else "No data yet."
 
         # ── Quarter embed ──────────────────────────────────────────────────────
@@ -1545,7 +1565,7 @@ async def event(ctx, *, args):
         quarter_embed.set_footer(text="Points · Winrate · Games Played")
 
         # ── All-time embed ─────────────────────────────────────────────────────
-        season = load_season()
+        season = load_season(guild.id)
         alltime_entries = []
         for uid, sdata in season.items():
             if isinstance(sdata, dict):
@@ -1578,7 +1598,8 @@ async def event(ctx, *, args):
         mention_content = scrim_news_role.mention if scrim_news_role else ""
 
         await leaderboard_channel.send(content=mention_content, embed=quarter_embed)
-        await leaderboard_channel.send(embed=alltime_embed)
+        if alltime_entries:
+            await leaderboard_channel.send(embed=alltime_embed)
         await ctx.send(f"✅ Leaderboard updated! Found **{games_found}** game(s) with winners.")
 
     else:
@@ -1731,8 +1752,8 @@ async def removewins(ctx, *, args=None):
         return
 
     guild       = ctx.guild
-    stats       = load_stats()
-    leaderboard = load_leaderboard()
+    stats       = load_stats(guild.id)
+    leaderboard = load_leaderboard(guild.id)
     uid_str     = str(member.id)
     user_stats  = get_or_create_stats(stats, uid_str)
 
@@ -1748,8 +1769,8 @@ async def removewins(ctx, *, args=None):
     if user_stats["win_streak"] > user_stats["games_won"]:
         user_stats["win_streak"] = user_stats["games_won"]
 
-    save_stats(stats)
-    save_leaderboard(leaderboard)
+    save_stats(stats, guild.id)
+    save_leaderboard(leaderboard, guild.id)
 
     embed = discord.Embed(title="➖ Wins Removed", color=discord.Color.red())
     embed.add_field(name="Player",       value=member.mention,                   inline=True)
@@ -1792,8 +1813,8 @@ async def winner(ctx, *, args=None):
         return
 
     guild       = ctx.guild
-    stats       = load_stats()
-    leaderboard = load_leaderboard()
+    stats       = load_stats(guild.id)
+    leaderboard = load_leaderboard(guild.id)
     results     = []
 
     for user_id_int in member_ids:
@@ -1823,8 +1844,8 @@ async def winner(ctx, *, args=None):
         fire   = " 🔥" if streak >= 3 else ""
         results.append(f"{member.mention} — {user_stats['games_won']} wins | streak: {streak}{fire}")
 
-    save_stats(stats)
-    save_leaderboard(leaderboard)
+    save_stats(stats, guild.id)
+    save_leaderboard(leaderboard, guild.id)
 
     if not results:
         await ctx.send("❌ No valid users were updated.")
@@ -1936,7 +1957,7 @@ async def season(ctx, subcommand: str = None, *, args=None):
         return
 
     if subcommand.lower() == "show":
-        season_data = load_season()
+        season_data = load_season(guild.id)
         if not season_data:
             await ctx.send("⚠️ No all-time data yet. Run `r!season reset` at the end of a quarter to save results.")
             return
@@ -1970,9 +1991,9 @@ async def season(ctx, subcommand: str = None, *, args=None):
 
         await ctx.send(f"⏳ Saving current quarter **{quarter_name}** to all-time stats and resetting...")
 
-        stats       = load_stats()
-        leaderboard = load_leaderboard()
-        season_data = load_season()
+        stats       = load_stats(guild.id)
+        leaderboard = load_leaderboard(guild.id)
+        season_data = load_season(guild.id)
 
         # Merge current quarter into all-time
         for uid, wins in leaderboard.items():
@@ -1988,7 +2009,7 @@ async def season(ctx, subcommand: str = None, *, args=None):
                 "winrate":      f"{(wins/games*100):.1f}%" if games > 0 else "0%"
             })
 
-        save_season(season_data)
+        save_season(season_data, guild.id)
 
         # Reset current quarter stats
         for uid in stats:
@@ -2000,11 +2021,11 @@ async def season(ctx, subcommand: str = None, *, args=None):
                 stats[uid]["attended"]     = 0
                 # best_streak is kept intentionally
 
-        save_stats(stats)
+        save_stats(stats, guild.id)
 
         # Reset leaderboard
         empty_lb = {}
-        save_leaderboard(empty_lb)
+        save_leaderboard(empty_lb, guild.id)
 
         embed = discord.Embed(
             title=f"✅ Quarter Reset — {quarter_name}",
@@ -2033,8 +2054,8 @@ async def season(ctx, subcommand: str = None, *, args=None):
 @bot.command()
 async def stats(ctx, *, args=None):
     guild       = ctx.guild
-    stats       = load_stats()
-    leaderboard = load_leaderboard()
+    stats       = load_stats(guild.id)
+    leaderboard = load_leaderboard(guild.id)
 
     if args and args.strip().lower() == "top":
         if not stats:
