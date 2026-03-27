@@ -516,7 +516,17 @@ async def log_game(guild, winner_ids: set, source: str = "manual"):
       source      – "manual" (r!game winner) or "auto" (game-links message)
     """
     if not current_game_participants:
-        print(f"[log_game] No participants tracked yet, skipping ({source})")
+        # Fallback: use everyone currently in game VCs (happens after bot restart)
+        event_vc_id = get_cfg(guild.id, "event_channel_id")
+        for vc in guild.voice_channels:
+            if vc.id != event_vc_id:
+                for member in vc.members:
+                    if not member.bot:
+                        current_game_participants.add(member.id)
+        print(f"[log_game] Participant pool was empty – rebuilt from current VCs: {len(current_game_participants)} players")
+
+    if not current_game_participants:
+        print(f"[log_game] No participants found anywhere, skipping ({source})")
         return None
 
     stats      = load_stats(guild.id)
@@ -1552,7 +1562,7 @@ async def event(ctx, *, args):
         quarter_entries = []
         for uid, wins in leaderboard.items():
             user_stats  = get_or_create_stats(stats, uid)
-            games       = user_stats.get("games_played", 0)
+            games       = max(user_stats.get("games_played", 0), wins)  # at minimum played as many as won
             quarter_entries.append((uid, wins, games))
         quarter_entries.sort(key=lambda x: x[1], reverse=True)
         quarter_entries = quarter_entries[:15]
@@ -2486,5 +2496,31 @@ async def slash_cmd(interaction: discord.Interaction):
 # ─── Run Bot ──────────────────────────────────────────────────────────────────
 # TOKEN is read from the environment variable to keep it out of the source code.
 # Set it with: export TOKEN=your_bot_token  (or via your hosting platform's secrets)
+
+# ─── TEMP: r!fixgames [games] ─────────────────────────────────────────────────
+# One-time command to manually set games_played for all players in the leaderboard.
+# Use: r!fixgames 5
+# Delete this command after use.
+
+@bot.command()
+@has_allowed_role()
+async def fixgames(ctx, games: int = 5):
+    guild       = ctx.guild
+    leaderboard = load_leaderboard(guild.id)
+    stats       = load_stats(guild.id)
+
+    if not leaderboard:
+        await ctx.send("❌ No leaderboard data found.")
+        return
+
+    updated = 0
+    for uid in leaderboard:
+        user_stats = get_or_create_stats(stats, uid)
+        user_stats["games_played"] = max(games, user_stats.get("games_played", 0))
+        updated += 1
+
+    save_stats(stats, guild.id)
+    await ctx.send(f"✅ Set `games_played` to **{games}** for **{updated}** players.")
+
 
 bot.run(os.getenv("TOKEN"))
