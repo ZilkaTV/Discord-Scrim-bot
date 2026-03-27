@@ -1522,7 +1522,7 @@ async def event(ctx, *, args):
         game_links_channel  = bot.get_channel(get_cfg(guild.id, "game_links_id"))
         leaderboard_channel = bot.get_channel(get_cfg(guild.id, "leaderboard_channel_id"))
         stats               = load_stats(guild.id)
-        leaderboard         = load_leaderboard(guild.id)
+        leaderboard         = {}  # Always start fresh – scan rebuilds from scratch
         games_found         = 0
 
         # Count wins from game-links messages
