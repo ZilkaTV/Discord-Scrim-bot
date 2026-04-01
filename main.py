@@ -573,8 +573,11 @@ async def scrim_vc_check():
     """Every minute: if a scrim is active, re-evaluate all VC roles across all guilds."""
     if not scrim_active:
         return
+    # Only update guilds that have a valid configuration
     for guild in bot.guilds:
-        await update_scrim_vc_roles(guild)
+        channel_id = get_cfg(guild.id, "channel_id")
+        if channel_id and bot.get_channel(channel_id):
+            await update_scrim_vc_roles(guild)
 
 
 @scrim_vc_check.before_loop
@@ -1492,11 +1495,20 @@ async def event(ctx, *, args):
         scrim_active = True
 
         # Build a readable summary for the confirmation message
-        active_names = [
-            guild.get_member(uid).display_name
-            for uid in members_in_other_vc
-            if guild.get_member(uid) and not guild.get_member(uid).bot
-        ]
+        scrim_role = guild.get_role(get_cfg(guild.id, "role_id"))
+
+        active_names       = []
+        not_registered     = []
+
+        for uid in members_in_other_vc:
+            member = guild.get_member(uid)
+            if not member or member.bot:
+                continue
+            if scrim_role and scrim_role in member.roles:
+                active_names.append(member.display_name)
+            else:
+                not_registered.append(member.display_name)
+
         spectator_names = [
             guild.get_member(uid).display_name
             for uid in members_in_meeting_point
@@ -1504,14 +1516,19 @@ async def event(ctx, *, args):
         ]
 
         lines = ["✅ Update complete! Auto-check every minute is now **active**."]
+
         if active_names:
             lines.append(f"🎮 **Active Scrim** ({len(active_names)}): {', '.join(active_names)}")
         else:
             lines.append("🎮 **Active Scrim**: nobody in game VCs")
+
         if spectator_names:
             lines.append(f"👁️ **Spectator** ({len(spectator_names)}): {', '.join(spectator_names)}")
         else:
             lines.append("👁️ **Spectator**: nobody in Meeting Point")
+
+        if not_registered:
+            lines.append(f"⚠️ **Not Registered** ({len(not_registered)}): {', '.join(not_registered)} — in game VC but haven't signed up!")
 
         await ctx.send("\n".join(lines))
 
@@ -1563,13 +1580,10 @@ async def event(ctx, *, args):
             medals = ["🥇", "🥈", "🥉"]
             lines = []
             for i, (user_id, wins, games) in enumerate(entries):
-                member   = guild.get_member(int(user_id))
-                name     = member.display_name if member else f"<@{user_id}>"
-                # games_played must be at least as high as wins to avoid >100% winrate
-                effective_games = max(games, wins)
-                winrate  = f"{min((wins/effective_games*100), 100):.0f}%" if effective_games > 0 else "0%"
-                prefix   = medals[i] if i < 3 else ("🏅" if wins >= 3 else "▪️")
-                lines.append(f"{prefix} **{name}** — {wins} pts · {winrate} WR · {effective_games} games")
+                member = guild.get_member(int(user_id))
+                name   = member.display_name if member else f"<@{user_id}>"
+                prefix = medals[i] if i < 3 else ("🏅" if wins >= 3 else "▪️")
+                lines.append(f"{prefix} **{name}** — {wins} pt{'s' if wins != 1 else ''}")
             return "\n".join(lines) if lines else "No data yet."
 
         # ── Quarter embed ──────────────────────────────────────────────────────
@@ -1586,7 +1600,7 @@ async def event(ctx, *, args):
             description=build_lb_description(quarter_entries, guild),
             color=discord.Color.gold()
         )
-        quarter_embed.set_footer(text="Points · Winrate · Games Played")
+        quarter_embed.set_footer(text="1 Win = 1 Point  |  Use r!stats @Player for detailed stats")
 
         # ── All-time embed ─────────────────────────────────────────────────────
         season = load_season(guild.id)
