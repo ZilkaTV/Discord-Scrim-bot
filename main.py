@@ -1576,6 +1576,16 @@ async def event(ctx, *, args):
         with open(counted_file, "w") as f:
             json.dump(list(counted_ids), f)
 
+        # Sync games_won in stats.json to match leaderboard points
+        # This keeps both systems in sync so r!stats shows correct data
+        for uid, wins in leaderboard.items():
+            user_stats = get_or_create_stats(stats, uid)
+            user_stats["games_won"] = wins
+            # games_played must be at least as high as wins
+            if user_stats.get("games_played", 0) < wins:
+                user_stats["games_played"] = wins
+        save_stats(stats, guild.id)
+
         def build_lb_description(entries, guild):
             medals = ["🥇", "🥈", "🥉"]
             lines = []
@@ -2527,30 +2537,30 @@ async def slash_cmd(interaction: discord.Interaction):
 # TOKEN is read from the environment variable to keep it out of the source code.
 # Set it with: export TOKEN=your_bot_token  (or via your hosting platform's secrets)
 
-# ─── TEMP: r!fixgames [games] ─────────────────────────────────────────────────
-# One-time command to manually set games_played for all players in the leaderboard.
-# Use: r!fixgames 5
-# Delete this command after use.
+# ─── TEMP: r!syncstats ───────────────────────────────────────────────────────
+# Syncs leaderboard points → games_won in stats.json for all players.
+# Run once to fix mismatched data, then delete.
 
 @bot.command()
 @has_allowed_role()
-async def fixgames(ctx, games: int = 5):
+async def syncstats(ctx):
     guild       = ctx.guild
     leaderboard = load_leaderboard(guild.id)
     stats       = load_stats(guild.id)
 
     if not leaderboard:
-        await ctx.send("❌ No leaderboard data found.")
+        await ctx.send("❌ No leaderboard data found for this server.")
         return
 
     updated = 0
-    for uid in leaderboard:
+    for uid, wins in leaderboard.items():
         user_stats = get_or_create_stats(stats, uid)
-        user_stats["games_played"] = max(games, user_stats.get("games_played", 0))
+        user_stats["games_won"]    = wins
+        user_stats["games_played"] = max(user_stats.get("games_played", 0), wins)
         updated += 1
 
     save_stats(stats, guild.id)
-    await ctx.send(f"✅ Set `games_played` to **{games}** for **{updated}** players.")
+    await ctx.send(f"✅ Synced `games_won` to match leaderboard points for **{updated}** players.")
 
 
 bot.run(os.getenv("TOKEN"))
