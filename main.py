@@ -1533,16 +1533,15 @@ async def event(ctx, *, args):
         await ctx.send("\n".join(lines))
 
     elif subcommand == "leaderboard":
-        await ctx.send("⏳ Scanning game links and updating leaderboard...")
+        await ctx.send("⏳ Building leaderboard...")
 
         guild               = ctx.guild
         game_links_channel  = bot.get_channel(get_cfg(guild.id, "game_links_id"))
         leaderboard_channel = bot.get_channel(get_cfg(guild.id, "leaderboard_channel_id"))
         stats               = load_stats(guild.id)
-        leaderboard         = load_leaderboard(guild.id)  # Load existing – keeps wins from past weeks
-        games_found         = 0
+        leaderboard         = load_leaderboard(guild.id)  # Source of truth – updated by log_game in real time
 
-        # Load already-counted message IDs to prevent double-counting
+        # Also scan game-links for any uncounted messages (fallback for manually posted wins)
         counted_file = guild_file(guild.id, "counted_messages.json")
         if os.path.exists(counted_file):
             with open(counted_file, "r") as f:
@@ -1550,9 +1549,9 @@ async def event(ctx, *, args):
         else:
             counted_ids = set()
 
-        # Count wins from NEW game-links messages only
+        new_found = 0
         async for message in game_links_channel.history(limit=500):
-            if message.id in counted_ids:
+            if message.id in counted_ids or message.author == bot.user:
                 continue
             content_lower = message.content.lower()
             if "winner" in content_lower and message.mentions:
@@ -1561,27 +1560,23 @@ async def event(ctx, *, args):
                         uid = str(member.id)
                         leaderboard[uid] = leaderboard.get(uid, 0) + 1
                 counted_ids.add(message.id)
-                games_found += 1
+                new_found += 1
 
-        if games_found == 0:
+        if not leaderboard:
             await ctx.send(
-                "⚠️ No new winner messages found in game-links channel!\n"
-                "Who won? Use `r!winner USER_ID` to manually add a win.\n"
-                "Example: `r!winner 123456789012345678`"
+                "⚠️ No wins recorded yet!\n"
+                "Use `r!winner @Player` to manually add wins."
             )
             return
 
-        # Save updated leaderboard and counted message IDs
         save_leaderboard(leaderboard, guild.id)
         with open(counted_file, "w") as f:
             json.dump(list(counted_ids), f)
 
-        # Sync games_won in stats.json to match leaderboard points
-        # This keeps both systems in sync so r!stats shows correct data
+        # Sync stats.json games_won to match leaderboard
         for uid, wins in leaderboard.items():
             user_stats = get_or_create_stats(stats, uid)
             user_stats["games_won"] = wins
-            # games_played must be at least as high as wins
             if user_stats.get("games_played", 0) < wins:
                 user_stats["games_played"] = wins
         save_stats(stats, guild.id)
