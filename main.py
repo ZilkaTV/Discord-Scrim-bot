@@ -668,11 +668,32 @@ async def check_events():
                         channel    = bot.get_channel(get_cfg(guild.id, "channel_id"))
                         role       = guild.get_role(get_cfg(guild.id, "role_id"))
                         event_link = f"https://discord.com/events/{guild.id}/{event.id}"
-                        embed = discord.Embed(
-                            title=f"⏰ {event.name} starts in 30 minutes!",
-                            description=f"Get ready! The event **{event.name}** starts in 30 minutes.\n[View Event]({event_link})",
-                            color=discord.Color.yellow()
-                        )
+
+                        # Check if this is a tournament event
+                        t_data = load_tournament(guild.id)
+                        is_tournament = t_data and t_data.get("event_id") == event.id
+
+                        if is_tournament:
+                            accepted = [t for t in t_data.get("teams", []) if t["status"] == "accepted"]
+                            teams_list = "\n".join(
+                                f"🏅 **{t['tag']} {t['name']}**" for t in accepted
+                            ) or "No teams registered yet"
+                            embed = discord.Embed(
+                                title=f"⏰ {event.name} starts in 30 minutes!",
+                                description=(
+                                    f"The **{t_data['format'].upper()}** team scrim starts soon!\n"
+                                    f"[View Event]({event_link})\n\n"
+                                    f"**Registered Teams:**\n{teams_list}"
+                                ),
+                                color=discord.Color.yellow()
+                            )
+                        else:
+                            embed = discord.Embed(
+                                title=f"⏰ {event.name} starts in 30 minutes!",
+                                description=f"Get ready! The event **{event.name}** starts in 30 minutes.\n[View Event]({event_link})",
+                                color=discord.Color.yellow()
+                            )
+
                         await channel.send(content=f"{role.mention}", embed=embed)
                         warned_events.add(event.id)
                         print(f"30 minute warning sent for {event.name}")
@@ -2608,32 +2629,26 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
     """Update the registration post slots counter and refresh the roster channel."""
     accepted = [t for t in t_data.get("teams", []) if t["status"] == "accepted"]
 
-    # ── Update registration embed slot count ───────────────────────────────────
+    # ── Update registration embed ──────────────────────────────────────────────
     reg_msg_id = t_data.get("register_message_id")
     reg_ch     = bot.get_channel(get_cfg(guild.id, "channel_id"))
     if reg_msg_id and reg_ch:
         try:
-            msg = await reg_ch.fetch_message(reg_msg_id)
+            msg   = await reg_ch.fetch_message(reg_msg_id)
             embed = msg.embeds[0] if msg.embeds else None
             if embed:
-                # Update slots field
-                new_fields = []
-                for field in embed.fields:
-                    if "Slots" in field.name:
-                        new_fields.append(discord.EmbedField(
-                            name="📊 Slots",
-                            value=f"{len(accepted)} / {t_data['max_teams']} teams",
-                            inline=True
-                        ))
-                    elif "Status" in field.name:
-                        status = "🔒 Closed" if t_data.get("closed") else "🟢 Open"
-                        new_fields.append(discord.EmbedField(name="🔓 Status", value=status, inline=True))
-                    else:
-                        new_fields.append(field)
                 new_embed = embed.copy()
                 new_embed.clear_fields()
-                for f in new_fields:
-                    new_embed.add_field(name=f.name, value=f.value, inline=f.inline)
+                new_embed.add_field(
+                    name="📊 Slots",
+                    value=f"{len(accepted)} / {t_data['max_teams']} teams",
+                    inline=True
+                )
+                new_embed.add_field(
+                    name="🔓 Status",
+                    value="🔒 Closed" if t_data.get("closed") else "🟢 Open",
+                    inline=True
+                )
                 await msg.edit(embed=new_embed)
         except Exception as e:
             print(f"[tournament] Could not update register embed: {e}")
@@ -2667,7 +2682,6 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
              + ("🔒 Closed" if t_data.get("closed") else "🟢 Open for registration")
     )
 
-    # Delete old roster message and post fresh one
     roster_msg_id = t_data.get("roster_message_id")
     if roster_msg_id:
         try:
@@ -2679,6 +2693,20 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
     new_msg = await roster_ch.send(embed=roster_embed)
     t_data["roster_message_id"] = new_msg.id
     save_tournament(guild.id, t_data)
+
+
+async def give_scrim_role_to_team(guild: discord.Guild, team: dict, guild_id: int):
+    """Give the Scrim Player role to all accepted team members."""
+    scrim_role = guild.get_role(get_cfg(guild_id, "role_id"))
+    if not scrim_role:
+        return
+    for player in team.get("players", []):
+        member = guild.get_member(int(player["discord_id"]))
+        if member and scrim_role not in member.roles:
+            try:
+                await member.add_roles(scrim_role)
+            except Exception as e:
+                print(f"Could not give scrim role to {player['discord_id']}: {e}")
 
 
 # ── Register Button View ───────────────────────────────────────────────────────
@@ -2807,6 +2835,9 @@ class TeamApprovalView(discord.ui.View):
 
         # Update registration embed and roster channel
         await update_tournament_embeds(interaction.guild, t_data)
+
+        # Give Scrim Player role to accepted team members immediately
+        await give_scrim_role_to_team(interaction.guild, team, self.guild_id)
 
         # Notify the team in their ticket channel
         ticket_ch_id = team.get("ticket_channel_id")
@@ -3053,28 +3084,30 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             )
             return
 
-        parts = [p.strip() for p in args.split(",", 5)]
-        if len(parts) < 5:
+        parts = [p.strip() for p in args.split(",", 6)]
+        if len(parts) < 6:
             await ctx.send(
-                "❌ Please provide all values: TEAM_SIZE, MAX_TEAMS, Title, Description, Timestamp\n"
-                "Example: `r!tournament create 3, 4, Friday Scrim, Competitive, <t:1700000000:R>`"
+                "❌ Please provide all values: TEAM_SIZE, MAX_TEAMS, SUBSTITUTES, Title, Description, Timestamp\n"
+                "Example: `r!tournament create 3, 4, 1, Friday Scrim, Competitive, <t:1700000000:R>`\n"
+                "*(SUBSTITUTES = extra reserve players per team, can be 0)*"
             )
             return
 
         try:
-            team_size = int(parts[0])
-            max_teams = int(parts[1])
+            team_size   = int(parts[0])
+            max_teams   = int(parts[1])
+            substitutes = int(parts[2])
         except ValueError:
-            await ctx.send("❌ TEAM_SIZE and MAX_TEAMS must be numbers. Example: `3, 4`")
+            await ctx.send("❌ TEAM_SIZE, MAX_TEAMS and SUBSTITUTES must be numbers. Example: `3, 4, 1`")
             return
 
-        if team_size < 1 or max_teams < 1:
-            await ctx.send("❌ Team size and max teams must be at least 1.")
+        if team_size < 1 or max_teams < 1 or substitutes < 0:
+            await ctx.send("❌ Team size and max teams must be at least 1. Substitutes can be 0 or more.")
             return
 
-        title       = parts[2].strip()
-        description = parts[3].strip()
-        time_str    = parts[4].strip()
+        title       = parts[3].strip()
+        description = parts[4].strip()
+        time_str    = parts[5].strip()
         max_players = team_size * max_teams
         fmt         = f"{team_size}v" * max_teams
         fmt         = fmt.rstrip("v")
@@ -3136,6 +3169,7 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             "team_size":         team_size,
             "max_teams":         max_teams,
             "max_players":       max_players,
+            "substitutes":       substitutes,
             "closed":            False,
             "event_id":          event.id if event else None,
             "review_channel_id": review_ch.id,
@@ -3152,12 +3186,14 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         mention_roles = get_cfg(guild.id, "mention_roles")
         mentions = " ".join(f"<@&{r}>" for r in mention_roles)
 
+        sub_line = f"**Substitutes:** {substitutes} per team\n" if substitutes > 0 else ""
         embed = discord.Embed(
             title=f"🏆 {title}",
             description=(
                 f"{description}\n\n"
                 f"**Format:** {fmt.upper()}\n"
                 f"**Team Size:** {team_size} players per team\n"
+                + sub_line +
                 f"**Max Teams:** {max_teams}\n"
                 f"**Date:** {time_str.strip()}\n\n"
                 + (f"[📅 View Event]({event_link})\n\n" if event_link else "")
@@ -3296,6 +3332,25 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             f"Now use `r!event update` to assign Active Scrim and Spectator roles."
         )
 
+        # Announce tournament start in register channel
+        register_channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
+        scrim_role       = guild.get_role(get_cfg(guild.id, "role_id"))
+        if register_channel and scrim_role:
+            teams_list = "\n".join(
+                f"🔊 **{t['tag']} {t['name']}** — " + ", ".join(p["name"] for p in t["players"])
+                for t in accepted
+            )
+            embed = discord.Embed(
+                title=f"🏆 {t_data.get('title', 'Team Scrim')} — The Scrim has started!",
+                description=(
+                    f"The **{t_data['format'].upper()}** scrim is now live!\n\n"
+                    f"**Participating Teams:**\n{teams_list}\n\n"
+                    f"Join your private voice channel and good luck! 🎮"
+                ),
+                color=discord.Color.green()
+            )
+            await register_channel.send(content=scrim_role.mention, embed=embed)
+
     # ── DELETE ────────────────────────────────────────────────────────────────
     elif subcommand == "delete":
         t_data = load_tournament(guild.id)
@@ -3415,14 +3470,15 @@ async def maybe_handle_ticket(message: discord.Message):
 @app_commands.describe(
     team_size="Players per team (e.g. 3)",
     max_teams="Maximum number of teams (e.g. 4)",
+    substitutes="Reserve players per team (0 if none)",
     title="Event title",
     description="Short description",
     timestamp="Discord timestamp from discordtimestamp.com e.g. <t:1700000000:R>"
 )
-async def slash_tournament_create(interaction: discord.Interaction, team_size: int, max_teams: int, title: str, description: str, timestamp: str):
+async def slash_tournament_create(interaction: discord.Interaction, team_size: int, max_teams: int, substitutes: int, title: str, description: str, timestamp: str):
     await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
-    await tournament(ctx, subcommand="create", args=f"{team_size}, {max_teams}, {title}, {description}, {timestamp}")
+    await tournament(ctx, subcommand="create", args=f"{team_size}, {max_teams}, {substitutes}, {title}, {description}, {timestamp}")
 
 @bot.tree.command(name="tournament_list", description="Show all registered teams")
 @slash_has_role()
