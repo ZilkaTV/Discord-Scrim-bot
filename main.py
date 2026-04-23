@@ -2558,4 +2558,405 @@ async def syncstats(ctx):
     await ctx.send(f"✅ Synced `games_won` to match leaderboard points for **{updated}** players.")
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOURNAMENT / TEAM SCRIM SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def load_tournament(guild_id) -> dict:
+    path = guild_file(guild_id, "tournament.json")
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_tournament(guild_id, data: dict):
+    path = guild_file(guild_id, "tournament.json")
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+def clear_tournament(guild_id):
+    path = guild_file(guild_id, "tournament.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+
+class TeamRegistrationModal(discord.ui.Modal, title="Team Registration"):
+    team_name = discord.ui.TextInput(label="Team Name", placeholder="e.g. Alpha Squad", max_length=50)
+    team_tag  = discord.ui.TextInput(label="Team Tag",  placeholder="e.g. [ALF]", max_length=10)
+    player_ids = discord.ui.TextInput(
+        label="Discord User IDs (space or comma separated)",
+        placeholder="e.g. 123456789012345678 987654321098765432",
+        style=discord.TextStyle.paragraph, max_length=500
+    )
+
+    def __init__(self, guild_id, ticket_channel_id, team_size):
+        super().__init__()
+        self.guild_id          = guild_id
+        self.ticket_channel_id = ticket_channel_id
+        self.team_size         = team_size
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.player_ids.value.replace(",", " ").split()
+        ids = [r.strip() for r in raw if r.strip().isdigit()]
+        if len(ids) != self.team_size:
+            await interaction.response.send_message(
+                f"❌ Please provide exactly **{self.team_size}** Discord User ID(s). You provided {len(ids)}.",
+                ephemeral=True
+            )
+            return
+        t_data = load_tournament(self.guild_id)
+        if not t_data:
+            await interaction.response.send_message("❌ No active tournament.", ephemeral=True)
+            return
+        if t_data.get("closed"):
+            await interaction.response.send_message("❌ Registration is closed.", ephemeral=True)
+            return
+        existing_names = [t["name"].lower() for t in t_data.get("teams", [])]
+        if self.team_name.value.lower() in existing_names:
+            await interaction.response.send_message(
+                f"❌ A team named **{self.team_name.value}** is already registered.", ephemeral=True
+            )
+            return
+        all_registered_ids = []
+        for t in t_data.get("teams", []):
+            if t.get("status") == "accepted":
+                all_registered_ids.extend([p["discord_id"] for p in t.get("players", [])])
+        if any(pid in all_registered_ids for pid in ids):
+            await interaction.response.send_message("❌ One or more players are already in an accepted team.", ephemeral=True)
+            return
+        team_id = f"team_{len(t_data.get('teams', []))}"
+        players = [{"discord_id": pid, "name": f"<@{pid}>"} for pid in ids]
+        team    = {
+            "team_id": team_id, "name": self.team_name.value, "tag": self.team_tag.value,
+            "players": players, "status": "pending",
+            "submitter": str(interaction.user.id), "channel_id": None
+        }
+        t_data.setdefault("teams", []).append(team)
+        save_tournament(self.guild_id, t_data)
+        ticket_channel = interaction.guild.get_channel(self.ticket_channel_id)
+        if ticket_channel:
+            player_mentions = " ".join(f"<@{p['discord_id']}>" for p in players)
+            embed = discord.Embed(
+                title=f"📋 New Team Registration — {self.team_tag.value} {self.team_name.value}",
+                color=discord.Color.orange()
+            )
+            embed.add_field(name="Team Name", value=self.team_name.value, inline=True)
+            embed.add_field(name="Tag",       value=self.team_tag.value,  inline=True)
+            embed.add_field(name=f"Players ({self.team_size})", value=player_mentions, inline=False)
+            embed.add_field(name="Submitted by", value=interaction.user.mention, inline=False)
+            embed.set_footer(text=f"Team ID: {team_id}")
+            view = TeamApprovalView(guild_id=self.guild_id, team_id=team_id)
+            await ticket_channel.send(embed=embed, view=view)
+        await interaction.response.send_message(
+            f"✅ Your team **{self.team_tag.value} {self.team_name.value}** has been submitted! "
+            f"Wait for a Host to accept your registration.", ephemeral=True
+        )
+
+
+class TournamentRegisterView(discord.ui.View):
+    def __init__(self, guild_id, ticket_channel_id, team_size):
+        super().__init__(timeout=None)
+        self.guild_id          = guild_id
+        self.ticket_channel_id = ticket_channel_id
+        self.team_size         = team_size
+
+    @discord.ui.button(label="🎟️ Register Team", style=discord.ButtonStyle.primary, custom_id="tournament_register")
+    async def register_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        t_data = load_tournament(self.guild_id)
+        if not t_data:
+            await interaction.response.send_message("❌ No active tournament.", ephemeral=True)
+            return
+        if t_data.get("closed"):
+            await interaction.response.send_message("❌ Registration is closed.", ephemeral=True)
+            return
+        modal = TeamRegistrationModal(
+            guild_id=self.guild_id, ticket_channel_id=self.ticket_channel_id, team_size=self.team_size
+        )
+        await interaction.response.send_modal(modal)
+
+
+class TeamApprovalView(discord.ui.View):
+    def __init__(self, guild_id, team_id):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.team_id  = team_id
+
+    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="tournament_accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        allowed = get_cfg(self.guild_id, "allowed_roles")
+        user_role_ids = [r.id for r in interaction.user.roles]
+        if not interaction.user.guild_permissions.administrator and not any(r in user_role_ids for r in allowed):
+            await interaction.response.send_message("❌ Only Staff/Host can accept teams.", ephemeral=True)
+            return
+        t_data = load_tournament(self.guild_id)
+        team   = next((t for t in t_data.get("teams", []) if t["team_id"] == self.team_id), None)
+        if not team:
+            await interaction.response.send_message("❌ Team not found.", ephemeral=True)
+            return
+        if team["status"] == "accepted":
+            await interaction.response.send_message("⚠️ Already accepted.", ephemeral=True)
+            return
+        team["status"] = "accepted"
+        save_tournament(self.guild_id, t_data)
+        accepted_teams = [t for t in t_data["teams"] if t["status"] == "accepted"]
+        max_teams      = t_data["max_teams"]
+        slots_left     = max_teams - len(accepted_teams)
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+        player_mentions = " ".join(f"<@{p['discord_id']}>" for p in team["players"])
+        await interaction.response.send_message(
+            f"✅ **{team['tag']} {team['name']}** accepted by {interaction.user.mention}!\n"
+            f"Players: {player_mentions}\nSlots remaining: **{slots_left}/{max_teams}**"
+        )
+        if slots_left <= 0:
+            t_data["closed"] = True
+            save_tournament(self.guild_id, t_data)
+            register_channel = bot.get_channel(get_cfg(self.guild_id, "channel_id"))
+            if register_channel:
+                await register_channel.send(
+                    "🔒 **Registration is now CLOSED!** All team slots are filled."
+                )
+            await interaction.followup.send("🔒 Tournament is now **full** – registration automatically closed!")
+
+    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger, custom_id="tournament_reject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        allowed = get_cfg(self.guild_id, "allowed_roles")
+        user_role_ids = [r.id for r in interaction.user.roles]
+        if not interaction.user.guild_permissions.administrator and not any(r in user_role_ids for r in allowed):
+            await interaction.response.send_message("❌ Only Staff/Host can reject teams.", ephemeral=True)
+            return
+        t_data = load_tournament(self.guild_id)
+        team   = next((t for t in t_data.get("teams", []) if t["team_id"] == self.team_id), None)
+        if not team:
+            await interaction.response.send_message("❌ Team not found.", ephemeral=True)
+            return
+        team["status"] = "rejected"
+        save_tournament(self.guild_id, t_data)
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+        player_mentions = " ".join(f"<@{p['discord_id']}>" for p in team["players"])
+        await interaction.response.send_message(
+            f"❌ **{team['tag']} {team['name']}** rejected by {interaction.user.mention}.\n"
+            f"Players: {player_mentions}"
+        )
+
+
+@bot.command()
+@has_allowed_role()
+async def tournament(ctx, subcommand: str = None, *, args=None):
+    guild = ctx.guild
+
+    if subcommand == "create":
+        if not args:
+            await ctx.send("❌ Usage: `r!tournament create 3v3v3v3 #ticket-channel`")
+            return
+        parts = args.split()
+        fmt   = parts[0].lower()
+        ticket_channel = ctx.message.channel_mentions[0] if ctx.message.channel_mentions else None
+        if not ticket_channel:
+            await ctx.send("❌ Please mention the ticket channel. Example: `r!tournament create 3v3v3v3 #ticket-channel`")
+            return
+        segments = fmt.split("v")
+        if len(segments) < 2 or not all(s.isdigit() for s in segments):
+            await ctx.send("❌ Invalid format. Use something like `3v3`, `4v4v4`, `3v3v3v3`.")
+            return
+        team_sizes = [int(s) for s in segments]
+        if len(set(team_sizes)) > 1:
+            await ctx.send("❌ All team sizes must be equal (e.g. `3v3v3v3`, not `2v3v4`).")
+            return
+        team_size   = team_sizes[0]
+        max_teams   = len(team_sizes)
+        max_players = team_size * max_teams
+        if load_tournament(guild.id):
+            await ctx.send("❌ A tournament is already active! Use `r!tournament delete` to remove it first.")
+            return
+        t_data = {
+            "format": fmt, "team_size": team_size, "max_teams": max_teams,
+            "max_players": max_players, "closed": False,
+            "ticket_channel_id": ticket_channel.id, "register_message_id": None, "teams": []
+        }
+        save_tournament(guild.id, t_data)
+        register_channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
+        embed = discord.Embed(
+            title=f"🏆 Team Scrim — {fmt.upper()}",
+            description=(
+                f"**Format:** {fmt.upper()}\n**Team Size:** {team_size} players\n"
+                f"**Max Teams:** {max_teams}\n**Max Players:** {max_players}\n\n"
+                f"Click the button below to register your team!\n"
+                f"You will need your teammates' **Discord User IDs**.\n"
+                f"*(Right-click a user → Copy User ID, Developer Mode must be on)*"
+            ),
+            color=discord.Color.gold()
+        )
+        embed.add_field(name="Slots", value=f"0 / {max_teams} teams", inline=True)
+        embed.add_field(name="Status", value="🟢 Open", inline=True)
+        view = TournamentRegisterView(guild_id=guild.id, ticket_channel_id=ticket_channel.id, team_size=team_size)
+        msg  = await register_channel.send(embed=embed, view=view)
+        t_data["register_message_id"] = msg.id
+        save_tournament(guild.id, t_data)
+        await ctx.send(f"✅ Tournament **{fmt.upper()}** created! Registration open in {register_channel.mention}.")
+
+    elif subcommand == "list":
+        t_data = load_tournament(guild.id)
+        if not t_data:
+            await ctx.send("❌ No active tournament.")
+            return
+        teams    = t_data.get("teams", [])
+        accepted = [t for t in teams if t["status"] == "accepted"]
+        pending  = [t for t in teams if t["status"] == "pending"]
+        rejected = [t for t in teams if t["status"] == "rejected"]
+        embed = discord.Embed(title=f"🏆 Tournament — {t_data['format'].upper()}", color=discord.Color.gold())
+        embed.add_field(
+            name=f"✅ Accepted ({len(accepted)}/{t_data['max_teams']})",
+            value="\n".join(
+                f"**{t['tag']} {t['name']}** — " + ", ".join(f"<@{p['discord_id']}>" for p in t["players"])
+                for t in accepted
+            ) or "None yet", inline=False
+        )
+        if pending:
+            embed.add_field(name=f"⏳ Pending ({len(pending)})",
+                value="\n".join(f"**{t['tag']} {t['name']}**" for t in pending), inline=False)
+        if rejected:
+            embed.add_field(name=f"❌ Rejected ({len(rejected)})",
+                value="\n".join(f"**{t['tag']} {t['name']}**" for t in rejected), inline=False)
+        embed.set_footer(text="🔒 Closed" if t_data.get("closed") else "🟢 Open")
+        await ctx.send(embed=embed)
+
+    elif subcommand == "close":
+        t_data = load_tournament(guild.id)
+        if not t_data:
+            await ctx.send("❌ No active tournament.")
+            return
+        if t_data.get("closed"):
+            await ctx.send("⚠️ Already closed.")
+            return
+        t_data["closed"] = True
+        save_tournament(guild.id, t_data)
+        accepted = [t for t in t_data.get("teams", []) if t["status"] == "accepted"]
+        register_channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
+        if register_channel:
+            await register_channel.send(
+                f"🔒 **Registration is now CLOSED!** **{len(accepted)}/{t_data['max_teams']}** teams registered."
+            )
+        await ctx.send("✅ Registration closed.")
+
+    elif subcommand == "start":
+        t_data = load_tournament(guild.id)
+        if not t_data:
+            await ctx.send("❌ No active tournament.")
+            return
+        accepted = [t for t in t_data.get("teams", []) if t["status"] == "accepted"]
+        if not accepted:
+            await ctx.send("❌ No accepted teams yet.")
+            return
+        await ctx.send(f"⏳ Creating private channels for **{len(accepted)}** teams...")
+        category_name    = f"SCRIM — {t_data['format'].upper()}"
+        category         = discord.utils.get(guild.categories, name=category_name)
+        if not category:
+            category = await guild.create_category(category_name)
+        allowed_role_ids = get_cfg(guild.id, "allowed_roles")
+        allowed_roles    = [guild.get_role(rid) for rid in allowed_role_ids if guild.get_role(rid)]
+        for i, team in enumerate(accepted):
+            members    = [guild.get_member(int(p["discord_id"])) for p in team["players"] if guild.get_member(int(p["discord_id"]))]
+            overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+            for role in allowed_roles:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            for member in members:
+                overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            channel_name = f"team-{i+1}-{team['name'].lower().replace(' ', '-')}"
+            ch = await guild.create_text_channel(channel_name, category=category, overwrites=overwrites,
+                topic=f"{team['tag']} {team['name']} | {t_data['format'].upper()} Scrim")
+            team["channel_id"] = ch.id
+            mentions = " ".join(f"<@{p['discord_id']}>" for p in team["players"])
+            await ch.send(
+                f"👋 Welcome **{team['tag']} {team['name']}**!\nPlayers: {mentions}\n"
+                f"This is your private team channel for the **{t_data['format'].upper()}** scrim. Good luck! 🏆"
+            )
+        save_tournament(guild.id, t_data)
+        await ctx.send(f"✅ Created **{len(accepted)}** private team channels under **{category_name}**!")
+
+    elif subcommand == "delete":
+        t_data = load_tournament(guild.id)
+        if not t_data:
+            await ctx.send("❌ No active tournament.")
+            return
+        await ctx.send("⏳ Cleaning up tournament...")
+        deleted = 0
+        for team in t_data.get("teams", []):
+            if team.get("channel_id"):
+                ch = guild.get_channel(team["channel_id"])
+                if ch:
+                    try:
+                        await ch.delete()
+                        deleted += 1
+                    except Exception as e:
+                        print(f"Error deleting channel: {e}")
+        category_name = f"SCRIM — {t_data['format'].upper()}"
+        category = discord.utils.get(guild.categories, name=category_name)
+        if category and len(category.channels) == 0:
+            try:
+                await category.delete()
+            except Exception:
+                pass
+        reg_msg_id = t_data.get("register_message_id")
+        if reg_msg_id:
+            register_channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
+            if register_channel:
+                try:
+                    msg = await register_channel.fetch_message(reg_msg_id)
+                    await msg.delete()
+                except Exception:
+                    pass
+        clear_tournament(guild.id)
+        await ctx.send(f"✅ Tournament deleted. Removed **{deleted}** team channel(s).")
+
+    else:
+        await ctx.send(
+            "❌ Unknown subcommand!\n"
+            "Available: `r!tournament create 3v3v3v3 #ticket-channel` · `r!tournament list` · "
+            "`r!tournament close` · `r!tournament start` · `r!tournament delete`"
+        )
+
+
+@bot.tree.command(name="tournament_create", description="Create a team scrim with limited slots")
+@slash_has_role()
+@app_commands.describe(format="Format e.g. 3v3v3v3 or 4v4v4", ticket_channel="Channel for team registrations")
+async def slash_tournament_create(interaction: discord.Interaction, format: str, ticket_channel: discord.TextChannel):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await tournament(ctx, subcommand="create", args=f"{format} {ticket_channel.mention}")
+
+@bot.tree.command(name="tournament_list", description="Show all registered teams")
+@slash_has_role()
+async def slash_tournament_list(interaction: discord.Interaction):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await tournament(ctx, subcommand="list")
+
+@bot.tree.command(name="tournament_close", description="Close team registrations")
+@slash_has_role()
+async def slash_tournament_close(interaction: discord.Interaction):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await tournament(ctx, subcommand="close")
+
+@bot.tree.command(name="tournament_start", description="Create private team channels and start the scrim")
+@slash_has_role()
+async def slash_tournament_start(interaction: discord.Interaction):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await tournament(ctx, subcommand="start")
+
+@bot.tree.command(name="tournament_delete", description="End the tournament and delete all team channels")
+@slash_has_role()
+async def slash_tournament_delete(interaction: discord.Interaction):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await tournament(ctx, subcommand="delete")
+
+
 bot.run(os.getenv("TOKEN"))
