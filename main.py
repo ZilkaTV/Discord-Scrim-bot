@@ -3361,6 +3361,22 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         await ctx.send("⏳ Cleaning up tournament...")
         deleted = 0
 
+        # End/delete the Discord scheduled event
+        event_id = t_data.get("event_id")
+        if event_id:
+            try:
+                events = await guild.fetch_scheduled_events()
+                for ev in events:
+                    if ev.id == event_id:
+                        if ev.status == discord.EventStatus.active:
+                            await ev.end()
+                        else:
+                            await ev.cancel()
+                        print(f"Tournament event deleted: {ev.name}")
+                        break
+            except Exception as e:
+                print(f"Could not delete tournament event: {e}")
+
         # Delete team channels
         for team in t_data.get("teams", []):
             if team.get("channel_id"):
