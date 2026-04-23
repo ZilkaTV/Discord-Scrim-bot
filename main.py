@@ -3102,6 +3102,7 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                 end_time=datetime.fromtimestamp(timestamp + 7200, tz=timezone.utc),
                 entity_type=discord.EntityType.voice,
                 channel=event_channel,
+                privacy_level=discord.PrivacyLevel.guild_only,
             )
         except Exception as e:
             await ctx.send(f"⚠️ Could not create Discord event: `{e}`\nContinuing with registration post...")
