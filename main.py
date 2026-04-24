@@ -619,6 +619,10 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing slash commands: {e}")
 
+    # Load persisted ticket states
+    active_tickets.update(load_active_tickets())
+    print(f"Loaded {len(active_tickets)} active ticket(s)")
+
     # Start loops only if not already running
     if not check_events.is_running():
         check_events.start()
@@ -2624,6 +2628,26 @@ def clear_tournament(guild_id):
 
 # Active ticket conversations: {ticket_channel_id: {step, data, guild_id, user_id}}
 active_tickets: dict = {}
+
+
+def load_active_tickets() -> dict:
+    path = os.path.join(DATA_DIR, "active_tickets.json")
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return {int(k): v for k, v in json.load(f).items()}
+    return {}
+
+
+def save_active_tickets():
+    path = os.path.join(DATA_DIR, "active_tickets.json")
+    with open(path, "w") as f:
+        json.dump({str(k): v for k, v in active_tickets.items()}, f, indent=2)
+
+
+def remove_active_ticket(channel_id: int):
+    if channel_id in active_tickets:
+        del active_tickets[channel_id]
+    save_active_tickets()
 
 
 async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
