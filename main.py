@@ -2792,7 +2792,7 @@ class TournamentRegisterView(discord.ui.View):
             category = await guild.create_category(cat_name)
 
         ticket_ch = await guild.create_text_channel(
-            name=f"ticket-{user.display_name.lower().replace(' ', '-')}",
+            name=f"[ticket]-{user.display_name.lower().replace(' ', '-')[:20]}",
             category=category,
             overwrites=overwrites,
             topic=f"Team registration ticket for {user.display_name}"
@@ -3255,47 +3255,79 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
     if subcommand == "create":
         if not args:
             await ctx.send(
-                "❌ Usage: `r!tournament create TEAM_SIZE, MAX_TEAMS, Title, Description, <t:TIMESTAMP:R>`\n"
-                "Example: `r!tournament create 3, 4, Friday Scrim, Competitive, <t:1700000000:R>`\n\n"
-                "• **TEAM_SIZE** = players per team (1, 2, 3, 4, ...)\n"
-                "• **MAX_TEAMS** = how many teams can join"
+                "❌ Usage: `r!tournament create FORMAT, GROUPS, SUBSTITUTES, Title, Description, <t:TIMESTAMP:R>`\n"
+                "Examples:\n"
+                "• `r!tournament create 3v3, 1, 0, Friday Scrim, Competitive, <t:1700000000:R>` — 2 teams of 3\n"
+                "• `r!tournament create 3v3v3v3, 2, 1, Friday Scrim, 24 Players, <t:1700000000:R>` — 2 groups of 4 teams\n\n"
+                "**FORMAT** = `3v3`, `4v4v4`, `3v3v3v3` etc. (determines teams per group & team size)\n"
+                "**GROUPS** = number of groups (1 = single group, 2 = two groups, etc.)\n"
+                "**SUBSTITUTES** = reserve players per team (0 if none)"
             )
             return
 
         parts = [p.strip() for p in args.split(",", 6)]
         if len(parts) < 6:
             await ctx.send(
-                "❌ Please provide all values: TEAM_SIZE, MAX_TEAMS, SUBSTITUTES, Title, Description, Timestamp\n"
-                "Example: `r!tournament create 3, 4, 1, Friday Scrim, Competitive, <t:1700000000:R>`\n"
-                "*(SUBSTITUTES = extra reserve players per team, can be 0)*"
+                "❌ Please provide all values: FORMAT, GROUPS, SUBSTITUTES, Title, Description, Timestamp\n"
+                "Example: `r!tournament create 3v3v3v3, 2, 1, Friday Scrim, Competitive, <t:1700000000:R>`"
             )
             return
 
-        try:
-            team_size   = int(parts[0])
-            max_teams   = int(parts[1])
-            substitutes = int(parts[2])
-        except ValueError:
-            await ctx.send("❌ TEAM_SIZE, MAX_TEAMS and SUBSTITUTES must be numbers. Example: `3, 4, 1`")
-            return
-
-        if team_size < 1 or max_teams < 1 or substitutes < 0:
-            await ctx.send("❌ Team size and max teams must be at least 1. Substitutes can be 0 or more.")
-            return
-
+        fmt_raw     = parts[0].lower().strip()
+        groups_str  = parts[1].strip()
+        sub_str     = parts[2].strip()
         title       = parts[3].strip()
         description = parts[4].strip()
         time_str    = parts[5].strip()
+
+        # Parse format string e.g. "3v3v3v3"
+        import re
+        segments = fmt_raw.split("v")
+        if len(segments) < 2 or not all(s.isdigit() for s in segments):
+            await ctx.send("❌ Invalid format. Use `3v3`, `4v4v4`, `3v3v3v3` etc.")
+            return
+        team_sizes = [int(s) for s in segments]
+        if len(set(team_sizes)) > 1:
+            await ctx.send("❌ All team sizes must be equal (e.g. `3v3v3v3`, not `2v3v4`).")
+            return
+
+        team_size         = team_sizes[0]
+        teams_per_group   = len(team_sizes)
+
+        try:
+            groups      = int(groups_str)
+            substitutes = int(sub_str)
+        except ValueError:
+            await ctx.send("❌ GROUPS and SUBSTITUTES must be numbers. Example: `2, 1`")
+            return
+
+        if team_size < 1 or teams_per_group < 2 or groups < 1 or substitutes < 0:
+            await ctx.send("❌ Invalid values. Team size ≥1, format must have at least 2 teams, groups ≥1.")
+            return
+
+        max_teams   = teams_per_group * groups
         max_players = team_size * max_teams
-        fmt         = f"{team_size}v" * max_teams
-        fmt         = fmt.rstrip("v")
+        fmt         = fmt_raw
+
+        # Validate: max_players must be divisible by team_size × teams_per_group
+        if max_players % team_size != 0:
+            await ctx.send(
+                f"❌ Invalid player count! With format **{fmt.upper()}** and **{groups}** group(s):\n"
+                f"• Teams per group: {teams_per_group}\n"
+                f"• Total teams: {max_teams}\n"
+                f"• Required players: **{max_players}** ({team_size} × {max_teams})\n\n"
+                f"The numbers don't add up. Adjust your format or group count."
+            )
+            return
+
+        # Inform if groups > 1
+        groups_info = f" across **{groups} groups** ({teams_per_group} teams each)" if groups > 1 else ""
 
         if load_tournament(guild.id):
             await ctx.send("❌ A tournament is already active! Use `r!tournament delete` first.")
             return
 
         # Extract timestamp
-        import re
         ts_match = re.search(r'<t:(\d+)', time_str)
         if not ts_match:
             await ctx.send("❌ Invalid timestamp. Generate one at discordtimestamp.com and use `<t:...:R>` format.")
@@ -3345,6 +3377,8 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             "format":            fmt,
             "title":             title,
             "team_size":         team_size,
+            "teams_per_group":   teams_per_group,
+            "groups":            groups,
             "max_teams":         max_teams,
             "max_players":       max_players,
             "substitutes":       substitutes,
@@ -3365,14 +3399,16 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         mentions = " ".join(f"<@&{r}>" for r in mention_roles)
 
         sub_line = f"**Substitutes:** {substitutes} per team\n" if substitutes > 0 else ""
+        groups_line = f"**Groups:** {groups} (à {teams_per_group} teams)\n" if groups > 1 else ""
         embed = discord.Embed(
             title=f"🏆 {title}",
             description=(
                 f"{description}\n\n"
                 f"**Format:** {fmt.upper()}\n"
                 f"**Team Size:** {team_size} players per team\n"
-                + sub_line +
-                f"**Max Teams:** {max_teams}\n"
+                + groups_line + sub_line +
+                f"**Total Teams:** {max_teams}\n"
+                f"**Total Players:** {max_players}\n"
                 f"**Date:** {time_str.strip()}\n\n"
                 + (f"[📅 View Event]({event_link})\n\n" if event_link else "")
                 + f"Click the button below to register your team!"
@@ -3724,17 +3760,17 @@ async def maybe_handle_ticket(message: discord.Message):
 @bot.tree.command(name="tournament_create", description="Create a team scrim event with registration")
 @slash_has_role()
 @app_commands.describe(
-    team_size="Players per team (e.g. 3)",
-    max_teams="Maximum number of teams (e.g. 4)",
+    format="Format e.g. 3v3, 4v4v4, 3v3v3v3",
+    groups="Number of groups (1 = single group, 2 = two groups etc.)",
     substitutes="Reserve players per team (0 if none)",
     title="Event title",
     description="Short description",
     timestamp="Discord timestamp from discordtimestamp.com e.g. <t:1700000000:R>"
 )
-async def slash_tournament_create(interaction: discord.Interaction, team_size: int, max_teams: int, substitutes: int, title: str, description: str, timestamp: str):
+async def slash_tournament_create(interaction: discord.Interaction, format: str, groups: int, substitutes: int, title: str, description: str, timestamp: str):
     await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
-    await tournament(ctx, subcommand="create", args=f"{team_size}, {max_teams}, {substitutes}, {title}, {description}, {timestamp}")
+    await tournament(ctx, subcommand="create", args=f"{format}, {groups}, {substitutes}, {title}, {description}, {timestamp}")
 
 @bot.tree.command(name="tournament_list", description="Show all registered teams")
 @slash_has_role()
