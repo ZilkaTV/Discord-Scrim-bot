@@ -2989,13 +2989,18 @@ async def handle_ticket_message(message: discord.Message):
     if step == 1:
         import re
         tag_match = re.search(r'\[(.+?)\]', content)
-        if tag_match:
-            tag  = f"[{tag_match.group(1)}]"
-            name = content.replace(tag_match.group(0), "").strip()
-        else:
-            ps = content.rsplit(" ", 1)
-            name = ps[0].strip()
-            tag  = ps[1].strip() if len(ps) > 1 else ""
+        if not tag_match:
+            await message.channel.send(
+                "❌ Please include your **team tag in brackets**.\n"
+                "Example: `Alpha Squad [ALF]` or `[CYN] Cynosure`\n"
+                "The tag must be wrapped in `[ ]`."
+            )
+            return
+        tag  = f"[{tag_match.group(1)}]"
+        name = content.replace(tag_match.group(0), "").strip()
+        if not name:
+            await message.channel.send("❌ Please also include a **team name** alongside the tag.\nExample: `Alpha Squad [ALF]`")
+            return
         state["data"]["team_name"] = name
         state["data"]["team_tag"]  = tag
         state["step"] = 2
@@ -3175,6 +3180,11 @@ async def handle_ticket_message(message: discord.Message):
             if len(coaches) > 3:
                 await message.channel.send("❌ Maximum **3 coaches** allowed. Please re-enter with 3 or fewer coaches.")
                 return
+            # Check duplicates within coaches themselves first
+            coach_ids = [c["discord_id"] for c in coaches]
+            if len(set(coach_ids)) < len(coach_ids):
+                await message.channel.send("❌ Duplicate coach IDs detected! Each coach must have a unique Discord ID.")
+                return
             captain_id = state["data"].get("captain_id", "")
             all_ids = [captain_id] + state["data"].get("player_ids", []) + [s["discord_id"] for s in state["data"].get("subs", [])] + [c["discord_id"] for c in coaches]
             if len(set(all_ids)) < len(all_ids):
@@ -3200,7 +3210,7 @@ async def handle_ticket_message(message: discord.Message):
             await message.channel.send("\u274c One or more players are already in an accepted team.")
             return
 
-        starters = [{"name": team["captain_name"], "discord_id": captain_id}] + \
+        starters = [{"name": state["data"]["captain_name"], "discord_id": captain_id}] + \
                    [{"name": names[i], "discord_id": ids[i]} for i in range(len(names))]
         team_id  = f"team_{len(t_data.get('teams', []))}"
         team     = {
