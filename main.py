@@ -2669,9 +2669,10 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
                     value=f"{len(accepted)} / {t_data['max_teams']} teams",
                     inline=True
                 )
-                status_val = "🔒 Closed" if t_data.get("closed") else "🟢 Open"
+                status_val = "🔴 Closed" if t_data.get("closed") else "🟢 Open"
+                status_name = "🔒 Status" if t_data.get("closed") else "🔓 Status"
                 new_embed.add_field(
-                    name="🔓 Status",
+                    name=status_name,
                     value=status_val,
                     inline=True
                 )
@@ -2701,7 +2702,14 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
             cap_id   = team.get("captain_id", "")
             starters = [p for p in team["players"] if p["discord_id"] != cap_id]
 
-            line = f"**{i+1}. {team['tag']} {team['name']}**\n"
+            # All member pings for this team
+            all_pings = (
+                [f"<@{p['discord_id']}>" for p in team["players"]] +
+                [f"<@{p['discord_id']}>" for p in subs] +
+                [f"<@{c['discord_id']}>" for c in coaches]
+            )
+
+            line = f"**{i+1}. {team['tag']} {team['name']}** — {' '.join(all_pings)}\n"
             if coaches:
                 line += "🧑‍🏫 Coach: " + " / ".join(f"**{c['name']}**" for c in coaches) + "\n"
             line += f"👤 Captain: **{team.get('captain_name', '?')}**\n"
@@ -2717,7 +2725,7 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
         )
     roster_embed.set_footer(
         text=f"{len(accepted)}/{t_data['max_teams']} teams · "
-             + ("🔒 Closed" if t_data.get("closed") else "🟢 Open for registration")
+             + ("🔴 Closed" if t_data.get("closed") else "🟢 Open for registration")
     )
 
     roster_msg_id = t_data.get("roster_message_id")
@@ -3439,7 +3447,7 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             color=discord.Color.gold()
         )
         embed.add_field(name="📊 Slots", value=f"0 / {max_teams} teams", inline=True)
-        embed.add_field(name="🔓 Status", value="Open", inline=True)
+        embed.add_field(name="🔓 Status", value="🟢 Open", inline=True)
 
         view = TournamentRegisterView(guild_id=guild.id)
         msg  = await register_channel.send(content=mentions, embed=embed, view=view)
@@ -3472,16 +3480,20 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         if accepted:
             acc_lines = []
             for t in accepted:
-                coaches = t.get("coaches", [])
-                line = f"**{t['tag']} {t['name']}**"
+                coaches  = t.get("coaches", [])
+                subs     = t.get("substitutes_list", [])
+                cap_id   = t.get("captain_id", "")
+                starters = [p for p in t["players"] if p["discord_id"] != cap_id]
+
+                line = f"**{t['tag']} {t['name']}**\n"
                 if coaches:
-                    line += "\n🧑‍🏫 " + ", ".join(f"**{c['name']}**" for c in coaches)
-                line += f"\n👤 **{t.get('captain_name','?')}** (Captain)"
-                line += "\n🎮 " + ", ".join(f"**{p['name']}**" for p in t["players"])
-                subs = t.get("substitutes_list", [])
+                    line += "🧑‍🏫 Coach: " + " / ".join(f"**{c['name']}**" for c in coaches) + "\n"
+                line += f"👤 Captain: **{t.get('captain_name', '?')}**\n"
+                if starters:
+                    line += "🎮 Starter: " + " / ".join(f"**{p['name']}**" for p in starters) + "\n"
                 if subs:
-                    line += "\n🔄 " + ", ".join(f"**{p['name']}**" for p in subs)
-                acc_lines.append(line)
+                    line += "🔄 Substitute: " + " / ".join(f"**{p['name']}**" for p in subs)
+                acc_lines.append(line.strip())
             embed.add_field(
                 name=f"✅ Accepted ({len(accepted)}/{t_data['max_teams']})",
                 value="\n\n".join(acc_lines),
@@ -3503,7 +3515,7 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                 inline=False
             )
 
-        embed.set_footer(text="🔒 Closed" if t_data.get("closed") else "🟢 Open for registration")
+        embed.set_footer(text="🔴 Closed" if t_data.get("closed") else "🟢 Open for registration")
         await ctx.send(embed=embed)
 
     # ── CLOSE ─────────────────────────────────────────────────────────────────
@@ -3571,10 +3583,13 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             )
             team["channel_id"] = ch.id
 
-            # Notify players in their ticket channel (only they can see it)
+            # Notify all team members (players, subs, coaches) in their ticket channel
             ticket_ch = guild.get_channel(team.get("ticket_channel_id"))
             if ticket_ch:
-                mentions = " ".join(f"<@{p['discord_id']}>" for p in team["players"] + team.get("substitutes_list", []))
+                mentions = " ".join(
+                    f"<@{p['discord_id']}>" for p in
+                    team["players"] + team.get("substitutes_list", []) + team.get("coaches", [])
+                )
                 await ticket_ch.send(
                     f"🔊 {mentions}\n"
                     f"Your team **{team['tag']} {team['name']}** has been assigned a private voice channel: {ch.mention}\n"
