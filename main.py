@@ -2669,9 +2669,10 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
                     value=f"{len(accepted)} / {t_data['max_teams']} teams",
                     inline=True
                 )
+                status_val = "🔒 Closed" if t_data.get("closed") else "🟢 Open"
                 new_embed.add_field(
                     name="🔓 Status",
-                    value="🔒 Closed" if t_data.get("closed") else "🟢 Open",
+                    value=status_val,
                     inline=True
                 )
                 await msg.edit(embed=new_embed)
@@ -2961,21 +2962,46 @@ class TeamApprovalView(discord.ui.View):
 
 # ── Ticket conversation handler (called from on_message) ──────────────────────
 
-async def handle_ticket_message(message: discord.Message):
-    """Handles step-by-step registration conversation in ticket channels."""
+def parse_name_id_lines(text, count):
+    """Parse 'Name: USER_ID' lines. Returns (list of {name,discord_id}, errors)."""
+    lines   = [l.strip() for l in text.split('\n') if l.strip()]
+    results = []
+    errors  = []
+    for line in lines:
+        if ':' in line:
+            nm, uid = line.split(':', 1)
+            uid = uid.strip()
+            if uid.isdigit():
+                results.append({'name': nm.strip(), 'discord_id': uid})
+            else:
+                errors.append(f'Invalid ID for `{nm.strip()}`: `{uid}`')
+        else:
+            errors.append(f'Invalid format: `{line}` — use `Name: USER_ID`')
+    return results, errors
+
+
+async def handle_ticket_message(message):
+    """Handles step-by-step registration conversation in ticket channels.
+    Steps:
+      1 – Team Name & Tag
+      2 – Captain (Name: USER_ID)
+      3 – Remaining starters (Name: USER_ID per line, team_size-1 entries)
+      4 – Substitutes (Name: USER_ID, optional)
+      5 – Coaches (Name: USER_ID, optional, max 3)
+    """
     state = active_tickets.get(message.channel.id)
-    if not state or message.author.id != state["user_id"]:
+    if not state or message.author.id != state['user_id']:
         return
 
-    guild_id    = state["guild_id"]
+    guild_id    = state['guild_id']
     t_data      = load_tournament(guild_id)
-    team_size   = t_data.get("team_size", 1) if t_data else 1
-    substitutes = t_data.get("substitutes", 0) if t_data else 0
+    team_size   = t_data.get('team_size', 1) if t_data else 1
+    substitutes = t_data.get('substitutes', 0) if t_data else 0
     content     = message.content.strip()
 
-    if content.lower() == "cancel":
+    if content.lower() == 'cancel':
         remove_active_ticket(message.channel.id)
-        await message.channel.send("\u274c Registration cancelled. This channel will be deleted in 10 seconds.")
+        await message.channel.send('❌ Registration cancelled. This channel will be deleted in 10 seconds.')
         await asyncio.sleep(10)
         try:
             await message.channel.delete()
@@ -2983,276 +3009,241 @@ async def handle_ticket_message(message: discord.Message):
             pass
         return
 
-    step = state["step"]
+    step = state['step']
 
-    # Step 1: Team Name & Tag
+    # ── Step 1: Team Name & Tag ────────────────────────────────────────────────
     if step == 1:
         import re
         tag_match = re.search(r'\[(.+?)\]', content)
         if not tag_match:
             await message.channel.send(
-                "❌ Please include your **team tag in brackets**.\n"
-                "Example: `Alpha Squad [ALF]` or `[CYN] Cynosure`\n"
-                "The tag must be wrapped in `[ ]`."
+                '❌ Please include your **team tag in brackets**.\n'
+                'Example: `Alpha Squad [ALF]` or `[CYN] Cynosure`'
             )
             return
-        tag  = f"[{tag_match.group(1)}]"
-        name = content.replace(tag_match.group(0), "").strip()
+        tag  = f'[{tag_match.group(1)}]'
+        name = content.replace(tag_match.group(0), '').strip()
         if not name:
-            await message.channel.send("❌ Please also include a **team name** alongside the tag.\nExample: `Alpha Squad [ALF]`")
+            await message.channel.send('❌ Please also include a **team name** alongside the tag.\nExample: `Alpha Squad [ALF]`')
             return
-        state["data"]["team_name"] = name
-        state["data"]["team_tag"]  = tag
-        state["step"] = 2
+        state['data']['team_name'] = name
+        state['data']['team_tag']  = tag
+        state['step'] = 2
         save_active_tickets()
-        embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Step 2 / 6", color=discord.Color.blurple())
-        embed.add_field(name="\u2705 Team", value=f"**{tag} {name}**", inline=False)
-        embed.add_field(name="\U0001f464 Captain", value=f"Enter the **in-game name** of your captain.\nThe captain is the main contact person for your team.\n\nExample: `Biffeur`", inline=False)
-        embed.set_footer(text="Type cancel at any time to abort")
+
+        embed = discord.Embed(title='🎟️ Team Registration — Step 2 / 5', color=discord.Color.blurple())
+        embed.add_field(name='✅ Team', value=f'**{tag} {name}**', inline=False)
+        embed.add_field(
+            name='👤 Captain (Name + ID)',
+            value=(
+                'Enter your **captain** in this format:\n'
+                '`Name: USER_ID`\n\n'
+                'The captain fills **1 player slot**.\n'
+                'Right-click the user → **Copy User ID** *(Developer Mode on)*\n\n'
+                'Example: `Biffeur: 123456789012345678`'
+            ),
+            inline=False
+        )
+        embed.set_footer(text='Type cancel at any time to abort')
         await message.channel.send(embed=embed)
 
-    # Step 2: Captain name
+    # ── Step 2: Captain (Name: ID) ─────────────────────────────────────────────
     elif step == 2:
-        if not content:
-            await message.channel.send("\u274c Please enter the captain's in-game name.")
-            return
-        state["data"]["captain_name"] = content
-        state["step"] = 3
-        save_active_tickets()
-        embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Step 3 / 6", color=discord.Color.blurple())
-        embed.add_field(name="\u2705 Captain", value=f"**{content}**", inline=False)
-        embed.add_field(name="\U0001f194 Captain Discord User ID", value="Enter the **Discord User ID** of the captain.\n\nRight-click the user \u2192 **Copy User ID**\n*(Developer Mode must be on in Discord Settings)*\n\nExample: `123456789012345678`", inline=False)
-        embed.set_footer(text="Type cancel at any time to abort")
-        await message.channel.send(embed=embed)
-
-    # Step 3: Captain ID
-    elif step == 3:
-        if not content.isdigit():
-            await message.channel.send("\u274c Please enter a valid Discord User ID (numbers only).")
-            return
-        state["data"]["captain_id"] = content
-        state["step"] = 4
-        save_active_tickets()
-        remaining = team_size - 1  # captain fills one slot
-        embed = discord.Embed(title="🎟️ Team Registration — Step 4 / 6", color=discord.Color.blurple())
-        embed.add_field(name="✅ Captain", value=f"<@{content}>", inline=False)
-        if remaining > 0:
-            embed.add_field(
-                name=f"🎮 Remaining Starters ({remaining})",
-                value=f"The captain already fills **1 slot**. Enter the **in-game names** of the remaining **{remaining}** starter(s), one per line.\n\nExample:\n```\nPlayerTwo\nPlayerThree\n```",
-                inline=False
+        parsed, errors = parse_name_id_lines(content, 1)
+        if errors or len(parsed) != 1:
+            await message.channel.send(
+                '❌ Please enter exactly **1** captain in format `Name: USER_ID`.\n'
+                + ('\n'.join(errors) if errors else '')
             )
-        else:
-            embed.add_field(
-                name="🎮 Starters",
-                value="The captain fills the only starter slot — no additional starters needed.\nType `none` to skip.",
-                inline=False
-            )
-        if substitutes > 0:
-            embed.set_footer(text=f"After this: IDs → substitutes ({substitutes}) → coaches | Type cancel to abort")
-        else:
-            embed.set_footer(text="After this: IDs → coaches (optional) | Type cancel to abort")
-        await message.channel.send(embed=embed)
+            return
+        state['data']['captain_name'] = parsed[0]['name']
+        state['data']['captain_id']   = parsed[0]['discord_id']
+        state['step'] = 3
+        save_active_tickets()
 
-    # Step 4: Remaining starter names (captain already counted)
-    elif step == 4:
         remaining = team_size - 1
-        if remaining == 0 or content.lower() == "none":
-            names = []
-        else:
-            names = [n.strip() for n in content.split("\n") if n.strip()]
-            if len(names) != remaining:
-                await message.channel.send(f"❌ Please enter exactly **{remaining}** additional starter name(s), one per line. You entered {len(names)}.")
-                return
-        state["data"]["player_names"] = names
-        state["step"] = 5
-        save_active_tickets()
-
         if remaining > 0:
-            embed = discord.Embed(title="🎟️ Team Registration — Step 5 / 6", color=discord.Color.blurple())
-            embed.add_field(name="✅ Starters", value="\n".join(f"• {n}" for n in names), inline=False)
+            embed = discord.Embed(title='🎟️ Team Registration — Step 3 / 5', color=discord.Color.blurple())
+            embed.add_field(name='✅ Captain', value=f'**{parsed[0]["name"]}** — <@{parsed[0]["discord_id"]}>', inline=False)
             embed.add_field(
-                name=f"🆔 Starter IDs ({remaining})",
-                value=f"Enter the **Discord User IDs** of the {remaining} additional starter(s), one per line.\n*(Same order as names — do NOT include the captain's ID again)*\n\nExample:\n```\n123456789012345678\n987654321098765432\n```",
+                name=f'🎮 Remaining Starters ({remaining})',
+                value=(
+                    f'The captain fills **1 slot**. Enter the remaining **{remaining}** starter(s):\n'
+                    f'One per line as `Name: USER_ID`\n\n'
+                    f'Example:\n```\nPlayerTwo: 987654321098765432\nPlayerThree: 112233445566778899\n```'
+                ),
                 inline=False
             )
-            embed.set_footer(text="Type cancel at any time to abort")
-            await message.channel.send(embed=embed)
-        else:
-            # No additional starters needed, skip to substitutes or coaches
-            state["data"]["player_ids"] = []
             if substitutes > 0:
-                state["step"] = 6
-                save_active_tickets()
-                embed = discord.Embed(title="🎟️ Team Registration — Step 6 / 6", color=discord.Color.blurple())
-                embed.add_field(name=f"🔄 Substitutes ({substitutes})", value=f"Enter **{substitutes}** substitute(s).\nFormat: `Name: USER_ID`, one per line.\n\nExample:\n```\nSubOne: 112233445566778899\n```", inline=False)
-                embed.set_footer(text="After this: coaches (optional) | Type cancel to abort")
+                embed.set_footer(text=f'After this: substitutes ({substitutes}) → coaches | Type cancel to abort')
             else:
-                state["step"] = 7
-                save_active_tickets()
-                embed = discord.Embed(title="🎟️ Team Registration — Coaches (Optional)", color=discord.Color.blurple())
-                embed.add_field(name="🧑‍🏫 Coaches (max 3)", value="Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if you have no coaches.\n\nExample:\n```\nCoachMike: 123456789012345678\n```", inline=False)
-                embed.set_footer(text="Coaches get Spectator role + access to game-links & scrim-chat")
-            await message.channel.send(embed=embed)
-
-    # Step 5: Remaining starter IDs
-    elif step == 5:
-        remaining = team_size - 1
-        raw_ids = [i.strip() for i in content.replace(",", "\n").split("\n") if i.strip()]
-        ids = [i for i in raw_ids if i.isdigit()]
-        if len(ids) != remaining:
-            await message.channel.send(f"❌ Please enter exactly **{remaining}** User ID(s), one per line. You entered {len(ids)}.")
-            return
-        captain_id = state["data"].get("captain_id", "")
-        all_ids_so_far = [captain_id] + ids
-        if len(set(all_ids_so_far)) < len(all_ids_so_far):
-            await message.channel.send("❌ Duplicate User IDs detected! Each player can only appear once. Please re-enter.")
-            return
-        state["data"]["player_ids"] = ids
-        if substitutes > 0:
-            state["step"] = 6
-            save_active_tickets()
-            embed = discord.Embed(title="🎟️ Team Registration — Step 6 / 6", color=discord.Color.blurple())
-            embed.add_field(name=f"🔄 Substitutes ({substitutes})", value=f"Enter **{substitutes}** substitute(s).\nFormat: `Name: USER_ID`, one per line.\n\nExample:\n```\nSubOne: 112233445566778899\n```", inline=False)
-            embed.set_footer(text="After this: coaches (optional) | Type cancel to abort")
+                embed.set_footer(text='After this: coaches (optional) | Type cancel to abort')
             await message.channel.send(embed=embed)
         else:
-            state["step"] = 7
+            # 1v1 — no additional starters
+            state['data']['player_names'] = []
+            state['data']['player_ids']   = []
+            state['step'] = 4 if substitutes > 0 else 5
             save_active_tickets()
-            embed = discord.Embed(title="🎟️ Team Registration — Coaches (Optional)", color=discord.Color.blurple())
-            embed.add_field(name="🧑‍🏫 Coaches (max 3)", value="Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if you have no coaches.\n\nExample:\n```\nCoachMike: 123456789012345678\n```", inline=False)
-            embed.set_footer(text="Coaches get Spectator role + access to game-links & scrim-chat")
+            if substitutes > 0:
+                embed = discord.Embed(title='🎟️ Team Registration — Step 4 / 5', color=discord.Color.blurple())
+                embed.add_field(name=f'🔄 Substitutes ({substitutes})', value=f'Enter **{substitutes}** substitute(s) as `Name: USER_ID`, one per line.', inline=False)
+                embed.set_footer(text='After this: coaches (optional) | Type cancel to abort')
+            else:
+                embed = discord.Embed(title='🎟️ Team Registration — Coaches (Optional)', color=discord.Color.blurple())
+                embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
+                embed.set_footer(text='Coaches get Spectator role + access to game-links & scrim-chat')
             await message.channel.send(embed=embed)
 
-    # Step 6: Substitutes
-    elif step == 6:
-        lines = [l.strip() for l in content.split("\n") if l.strip()]
-        subs = []
-        errors = []
-        for line in lines:
-            if ":" in line:
-                pc = line.split(":", 1)
-                nm, uid = pc[0].strip(), pc[1].strip()
-                if uid.isdigit():
-                    subs.append({"name": nm, "discord_id": uid})
-                else:
-                    errors.append(f"Invalid ID for `{nm}`")
-            else:
-                errors.append(f"Invalid format: `{line}` (use `Name: USER_ID`)")
+    # ── Step 3: Remaining starters ─────────────────────────────────────────────
+    elif step == 3:
+        remaining = team_size - 1
+        parsed, errors = parse_name_id_lines(content, remaining)
         if errors:
-            await message.channel.send("\u274c Errors:\n" + "\n".join(errors) + "\nPlease re-enter all substitutes.")
+            await message.channel.send('❌ Errors:\n' + '\n'.join(errors) + '\nPlease re-enter all starters.')
             return
-        if len(subs) != substitutes:
-            await message.channel.send(f"\u274c Please enter exactly **{substitutes}** substitute(s). You entered {len(subs)}.")
+        if len(parsed) != remaining:
+            await message.channel.send(f'❌ Please enter exactly **{remaining}** starter(s). You entered {len(parsed)}.')
             return
-        captain_id = state["data"].get("captain_id", "")
-        all_ids = [captain_id] + state["data"]["player_ids"] + [s["discord_id"] for s in subs]
+
+        captain_id = state['data']['captain_id']
+        all_ids    = [captain_id] + [p['discord_id'] for p in parsed]
         if len(set(all_ids)) < len(all_ids):
-            await message.channel.send("\u274c Duplicate User IDs detected!")
+            await message.channel.send('❌ Duplicate User IDs detected! Each player can only appear once.')
             return
-        state["data"]["subs"] = subs
-        state["step"] = 7
+
+        state['data']['player_names'] = [p['name'] for p in parsed]
+        state['data']['player_ids']   = [p['discord_id'] for p in parsed]
+        state['step'] = 4 if substitutes > 0 else 5
         save_active_tickets()
-        embed = discord.Embed(title="🎟️ Team Registration — Coaches (Optional)", color=discord.Color.blurple())
-        embed.add_field(name="🧑‍🏫 Coaches (max 3)", value="Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if you have no coaches.\n\nExample:\n```\nCoachMike: 123456789012345678\n```", inline=False)
-        embed.set_footer(text="Coaches get Spectator role + access to game-links & scrim-chat")
+
+        if substitutes > 0:
+            embed = discord.Embed(title='🎟️ Team Registration — Step 4 / 5', color=discord.Color.blurple())
+            embed.add_field(
+                name=f'🔄 Substitutes ({substitutes})',
+                value=f'Enter **{substitutes}** substitute(s) as `Name: USER_ID`, one per line.\n\nExample:\n```\nSubOne: 112233445566778899\n```',
+                inline=False
+            )
+            embed.set_footer(text='After this: coaches (optional) | Type cancel to abort')
+        else:
+            embed = discord.Embed(title='🎟️ Team Registration — Coaches (Optional)', color=discord.Color.blurple())
+            embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
+            embed.set_footer(text='Coaches get Spectator role + access to game-links & scrim-chat')
         await message.channel.send(embed=embed)
 
-    # Step 7: Coaches
-    elif step == 7:
-        coaches = []
-        if content.lower() != "none":
-            lines = [l.strip() for l in content.split("\n") if l.strip()]
-            errors = []
-            for line in lines:
-                if ":" in line:
-                    pc = line.split(":", 1)
-                    nm, uid = pc[0].strip(), pc[1].strip()
-                    if uid.isdigit():
-                        coaches.append({"name": nm, "discord_id": uid})
-                    else:
-                        errors.append(f"Invalid ID for `{nm}`")
-                else:
-                    errors.append(f"Invalid format: `{line}` (use `Name: USER_ID`)")
-            if errors:
-                await message.channel.send("❌ Errors:\n" + "\n".join(errors) + "\nRe-enter coaches or type `none`.")
-                return
-            if len(coaches) > 3:
-                await message.channel.send("❌ Maximum **3 coaches** allowed. Please re-enter with 3 or fewer coaches.")
-                return
-            # Check duplicates within coaches themselves first
-            coach_ids = [c["discord_id"] for c in coaches]
-            if len(set(coach_ids)) < len(coach_ids):
-                await message.channel.send("❌ Duplicate coach IDs detected! Each coach must have a unique Discord ID.")
-                return
-            captain_id = state["data"].get("captain_id", "")
-            all_ids = [captain_id] + state["data"].get("player_ids", []) + [s["discord_id"] for s in state["data"].get("subs", [])] + [c["discord_id"] for c in coaches]
-            if len(set(all_ids)) < len(all_ids):
-                await message.channel.send("\u274c Duplicate User IDs detected!")
-                return
-        state["data"]["coaches"] = coaches
-
-        # Build team
-        names      = state["data"]["player_names"]
-        ids        = state["data"]["player_ids"]
-        captain_id = state["data"]["captain_id"]
-        subs       = state["data"].get("subs", [])
-
-        existing_ids = []
-        for t in t_data.get("teams", []):
-            if t.get("status") == "accepted":
-                existing_ids.extend([p["discord_id"] for p in t.get("players", [])])
-                existing_ids.extend([p["discord_id"] for p in t.get("substitutes_list", [])])
-                existing_ids.extend([p["discord_id"] for p in t.get("coaches", [])])
-                existing_ids.append(t.get("captain_id", ""))
-        all_new_ids = [captain_id] + ids + [s["discord_id"] for s in subs] + [c["discord_id"] for c in coaches]
-        if any(pid in existing_ids for pid in all_new_ids):
-            await message.channel.send("\u274c One or more players are already in an accepted team.")
+    # ── Step 4: Substitutes ────────────────────────────────────────────────────
+    elif step == 4:
+        parsed, errors = parse_name_id_lines(content, substitutes)
+        if errors:
+            await message.channel.send('❌ Errors:\n' + '\n'.join(errors) + '\nPlease re-enter all substitutes.')
+            return
+        if len(parsed) != substitutes:
+            await message.channel.send(f'❌ Please enter exactly **{substitutes}** substitute(s). You entered {len(parsed)}.')
             return
 
-        starters = [{"name": state["data"]["captain_name"], "discord_id": captain_id}] + \
-                   [{"name": names[i], "discord_id": ids[i]} for i in range(len(names))]
-        team_id  = f"team_{len(t_data.get('teams', []))}"
-        team     = {
-            "team_id": team_id, "name": state["data"]["team_name"], "tag": state["data"]["team_tag"],
-            "captain_name": state["data"]["captain_name"], "captain_id": captain_id,
-            "players": starters, "substitutes_list": subs, "coaches": coaches,
-            "status": "pending", "submitter": str(state["user_id"]),
-            "ticket_channel_id": message.channel.id, "channel_id": None
+        captain_id = state['data']['captain_id']
+        all_ids    = [captain_id] + state['data']['player_ids'] + [p['discord_id'] for p in parsed]
+        if len(set(all_ids)) < len(all_ids):
+            await message.channel.send('❌ Duplicate User IDs detected! Each player can only appear once.')
+            return
+
+        state['data']['subs'] = parsed
+        state['step'] = 5
+        save_active_tickets()
+
+        embed = discord.Embed(title='🎟️ Team Registration — Coaches (Optional)', color=discord.Color.blurple())
+        embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
+        embed.set_footer(text='Coaches get Spectator role + access to game-links & scrim-chat')
+        await message.channel.send(embed=embed)
+
+    # ── Step 5: Coaches ────────────────────────────────────────────────────────
+    elif step == 5:
+        coaches = []
+        if content.lower() != 'none':
+            parsed, errors = parse_name_id_lines(content, 0)
+            if errors:
+                await message.channel.send('❌ Errors:\n' + '\n'.join(errors) + '\nRe-enter coaches or type `none`.')
+                return
+            if len(parsed) > 3:
+                await message.channel.send('❌ Maximum **3 coaches** allowed.')
+                return
+            coach_ids = [c['discord_id'] for c in parsed]
+            if len(set(coach_ids)) < len(coach_ids):
+                await message.channel.send('❌ Duplicate coach IDs detected!')
+                return
+            captain_id = state['data'].get('captain_id', '')
+            all_ids    = [captain_id] + state['data'].get('player_ids', []) + [p['discord_id'] for p in state['data'].get('subs', [])] + coach_ids
+            if len(set(all_ids)) < len(all_ids):
+                await message.channel.send('❌ A coach ID matches an existing player ID. Each person can only appear once.')
+                return
+            coaches = parsed
+
+        state['data']['coaches'] = coaches
+
+        # Build team entry
+        names      = state['data']['player_names']
+        ids        = state['data']['player_ids']
+        captain_id = state['data']['captain_id']
+        subs       = state['data'].get('subs', [])
+
+        # Check duplicates against accepted teams
+        existing_ids = []
+        for t in t_data.get('teams', []):
+            if t.get('status') == 'accepted':
+                existing_ids.extend([p['discord_id'] for p in t.get('players', [])])
+                existing_ids.extend([p['discord_id'] for p in t.get('substitutes_list', [])])
+                existing_ids.extend([p['discord_id'] for p in t.get('coaches', [])])
+                existing_ids.append(t.get('captain_id', ''))
+        all_new = [captain_id] + ids + [s['discord_id'] for s in subs] + [c['discord_id'] for c in coaches]
+        if any(pid in existing_ids for pid in all_new):
+            await message.channel.send('❌ One or more players are already registered in an accepted team.')
+            return
+
+        starters = [{'name': state['data']['captain_name'], 'discord_id': captain_id}] + \
+                   [{'name': names[i], 'discord_id': ids[i]} for i in range(len(names))]
+
+        team_id = f"team_{len(t_data.get('teams', []))}"
+        team = {
+            'team_id': team_id, 'name': state['data']['team_name'], 'tag': state['data']['team_tag'],
+            'captain_name': state['data']['captain_name'], 'captain_id': captain_id,
+            'players': starters, 'substitutes_list': subs, 'coaches': coaches,
+            'status': 'pending', 'submitter': str(state['user_id']),
+            'ticket_channel_id': message.channel.id, 'channel_id': None
         }
-        t_data.setdefault("teams", []).append(team)
+        t_data.setdefault('teams', []).append(team)
         save_tournament(guild_id, t_data)
 
-        # Summary
-        summary = discord.Embed(title="\U0001f4cb Registration Summary", description=f"**{team['tag']} {team['name']}**", color=discord.Color.green())
+        # Summary embed
+        summary = discord.Embed(title='📋 Registration Summary', description=f'**{team["tag"]} {team["name"]}**', color=discord.Color.green())
         if coaches:
-            summary.add_field(name=f"\U0001f9d1\u200d\U0001f3eb Coaches ({len(coaches)})", value="\n".join(f"\u2022 **{c['name']}** \u2014 <@{c['discord_id']}>" for c in coaches), inline=False)
-        summary.add_field(name="\U0001f464 Captain", value=f"\u2022 **{team['captain_name']}** \u2014 <@{captain_id}>", inline=False)
-        summary.add_field(name=f"\U0001f3ae Starters ({team_size})", value="\n".join(f"\u2022 **{p['name']}** \u2014 <@{p['discord_id']}>" for p in starters), inline=False)
+            summary.add_field(name=f'🧑‍🏫 Coaches ({len(coaches)})', value='\n'.join(f'• **{c["name"]}** — <@{c["discord_id"]}>' for c in coaches), inline=False)
+        summary.add_field(name='👤 Captain', value=f'• **{team["captain_name"]}** — <@{captain_id}>', inline=False)
+        summary.add_field(name=f'🎮 Starters ({len(starters)})', value='\n'.join(f'• **{p["name"]}** — <@{p["discord_id"]}>' for p in starters), inline=False)
         if subs:
-            summary.add_field(name=f"\U0001f504 Substitutes ({len(subs)})", value="\n".join(f"\u2022 **{p['name']}** \u2014 <@{p['discord_id']}>" for p in subs), inline=False)
-        summary.add_field(name="\U0001f4ec Status", value="Submitted \u2014 waiting for host review.", inline=False)
-        summary.set_footer(text="A host will accept or reject your team shortly.")
+            summary.add_field(name=f'🔄 Substitutes ({len(subs)})', value='\n'.join(f'• **{p["name"]}** — <@{p["discord_id"]}>' for p in subs), inline=False)
+        summary.add_field(name='📬 Status', value='Submitted — waiting for host review.', inline=False)
+        summary.set_footer(text='A host will accept or reject your team shortly.')
         await message.channel.send(embed=summary)
 
-        # Review
-        guild = message.guild
-        review_ch_id = t_data.get("review_channel_id")
-        review_ch = guild.get_channel(review_ch_id) if review_ch_id else bot.get_channel(get_cfg(guild_id, "scrim_chat_id"))
+        # Staff review embed
+        guild        = message.guild
+        review_ch_id = t_data.get('review_channel_id')
+        review_ch    = guild.get_channel(review_ch_id) if review_ch_id else bot.get_channel(get_cfg(guild_id, 'scrim_chat_id'))
         if review_ch:
-            review = discord.Embed(title=f"\U0001f4cb New Team \u2014 {team['tag']} {team['name']}", color=discord.Color.orange())
+            review = discord.Embed(title=f'📋 New Team — {team["tag"]} {team["name"]}', color=discord.Color.orange())
             if coaches:
-                review.add_field(name=f"\U0001f9d1\u200d\U0001f3eb Coaches ({len(coaches)})", value="\n".join(f"**{c['name']}** \u2014 <@{c['discord_id']}>" for c in coaches), inline=False)
-            review.add_field(name="\U0001f464 Captain", value=f"**{team['captain_name']}** \u2014 <@{captain_id}>", inline=False)
-            review.add_field(name=f"\U0001f3ae Starters ({team_size})", value="\n".join(f"**{p['name']}** \u2014 <@{p['discord_id']}>" for p in starters), inline=False)
+                review.add_field(name=f'🧑‍🏫 Coaches ({len(coaches)})', value='\n'.join(f'**{c["name"]}** — <@{c["discord_id"]}>' for c in coaches), inline=False)
+            review.add_field(name='👤 Captain', value=f'**{team["captain_name"]}** — <@{captain_id}>', inline=False)
+            review.add_field(name=f'🎮 Starters ({len(starters)})', value='\n'.join(f'**{p["name"]}** — <@{p["discord_id"]}>' for p in starters), inline=False)
             if subs:
-                review.add_field(name=f"\U0001f504 Substitutes ({len(subs)})", value="\n".join(f"**{p['name']}** \u2014 <@{p['discord_id']}>" for p in subs), inline=False)
-            review.add_field(name="Submitted by", value=f"<@{state['user_id']}>", inline=False)
-            review.set_footer(text=f"Team ID: {team_id}")
+                review.add_field(name=f'🔄 Substitutes ({len(subs)})', value='\n'.join(f'**{p["name"]}** — <@{p["discord_id"]}>' for p in subs), inline=False)
+            review.add_field(name='Submitted by', value=f'<@{state["user_id"]}>', inline=False)
+            review.set_footer(text=f'Team ID: {team_id}')
             view = TeamApprovalView(guild_id=guild_id, team_id=team_id)
             await review_ch.send(embed=review, view=view)
 
-        del active_tickets[message.channel.id]
+        remove_active_ticket(message.channel.id)
+
 
 # ── r!tournament command ───────────────────────────────────────────────────────
 
@@ -3535,13 +3526,17 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         allowed_roles    = [guild.get_role(rid) for rid in allowed_role_ids if guild.get_role(rid)]
 
         for i, team in enumerate(accepted):
-            members = [guild.get_member(int(p["discord_id"])) for p in team["players"]]
-            members = [m for m in members if m]
+            members    = [guild.get_member(int(p["discord_id"])) for p in team["players"]]
+            members    = [m for m in members if m]
+            # Also give subs and coaches access to the voice channel
+            sub_members   = [guild.get_member(int(p["discord_id"])) for p in team.get("substitutes_list", []) if guild.get_member(int(p["discord_id"]))]
+            coach_members = [guild.get_member(int(p["discord_id"])) for p in team.get("coaches", []) if guild.get_member(int(p["discord_id"]))]
+            all_members   = members + sub_members + coach_members
 
             overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
             for role in allowed_roles:
                 overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-            for member in members:
+            for member in all_members:
                 overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
             ch_name = f"team-{i+1}-{team['name'].lower().replace(' ', '-')[:20]}"
