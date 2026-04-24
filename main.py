@@ -1955,12 +1955,16 @@ async def info(ctx):
             "- Sends a 30-minute warning before events start\n"
             "- Stays in the Meeting Point VC to keep events alive\n\n"
             "**Tournament Scrims:**\n"
-            "- Creates team scrims with a ticket-based registration system\n"
-            "- Players register via button → private ticket channel → step-by-step form\n"
-            "- Staff accepts/rejects teams via buttons\n"
-            "- Creates private voice channels per team when the scrim starts\n"
-            "- Supports substitutes per team\n\n"
-            "**New Server Setup:** Use `/setup` or `r!setup`\n"
+            "- Supports team formats (`3v3`, `3v3v3v3`), solo formats (`1v1`, `1v1v1`), FFA (`ffa8`, `ffa16`) and multiple groups\n"
+            "- Players register via button → private ticket channel → guided step-by-step form\n"
+            "- Ticket asks for: Captain, Starters, Substitutes (optional), Coaches (optional, max 3)\n"
+            "- Staff accepts/rejects teams via buttons — team gets notified in ticket\n"
+            "- Coaches receive Spectator role + access to game-links & scrim-chat\n"
+            "- Creates private voice channels per team at start (team + subs + coaches)\n"
+            "- Solo/FFA formats skip voice channels, substitutes and coaches\n"
+            "- Registered teams are displayed in a dedicated channel with live updates\n\n"
+            "**Multi-Server:** Each server has its own config, stats and leaderboard.\n"
+            "**New Server Setup:** Use `/setup` or `r!setup` *(Admin only)*\n"
             "**All Commands:** Use `/cmd` or `r!cmd`\n"
             "**Permissions:** Most commands require **Staff** or **Host** role"
         ),
@@ -1976,8 +1980,8 @@ async def info(ctx):
 async def cmd(ctx):
     embed = discord.Embed(title="🤖 SCRIM Bot — Commands", color=discord.Color.blurple())
 
-    embed.add_field(name="⚙️ Setup", value=(
-        "`r!setup` — Configure bot for this server *(Admin only)*\n"
+    embed.add_field(name="⚙️ Setup *(Admin only)*", value=(
+        "`r!setup` — Step-by-step server configuration wizard\n"
         "`r!setupshow` — Show current server configuration\n"
         "`r!setupreset` — Reset server configuration"
     ), inline=False)
@@ -1990,10 +1994,11 @@ async def cmd(ctx):
     ), inline=False)
 
     embed.add_field(name="🎟️ Tournament Scrim", value=(
-        "`r!tournament create SIZE, TEAMS, SUBS, Title, Desc, <t:TS:R>`\n"
+        "`r!tournament create FORMAT, GROUPS, SUBS, Title, Desc, <t:TS:R>`\n"
+        "Formats: `3v3`, `3v3v3v3`, `1v1`, `ffa8`, `ffa16` …\n"
         "`r!tournament list` — Show all registered teams\n"
         "`r!tournament close` — Close registrations\n"
-        "`r!tournament start` — Create private team voice channels\n"
+        "`r!tournament start` — Assign roles & create team VCs\n"
         "`r!tournament delete` — End tournament & full cleanup"
     ), inline=False)
 
@@ -2003,13 +2008,19 @@ async def cmd(ctx):
         "`r!stopupdate` — Stop auto-check & remove roles"
     ), inline=False)
 
+    embed.add_field(name="🏆 Game Tracking", value=(
+        "`r!game winner @A @B` — Log a game result\n"
+        "`r!winner @A` — Add wins manually\n"
+        "`r!removewins @Player [amount]` — Remove wins"
+    ), inline=False)
+
     embed.add_field(name="📊 Stats & Season", value=(
         "`r!stats` / `r!stats @Player` / `r!stats top`\n"
-        "`r!season reset Q2 2026` — Save quarter & reset\n"
+        "`r!season reset Q2 2026` — Save quarter to all-time & reset\n"
         "`r!season show` — All-time leaderboard"
     ), inline=False)
 
-    embed.add_field(name="🔄 Regular Scrim Workflow", value=(
+    embed.add_field(name="🔄 Regular Workflow", value=(
         "`r!create` → `r!join` → `r!event update` → log games → `r!event leaderboard` → `r!delete event`"
     ), inline=False)
 
@@ -2515,8 +2526,8 @@ async def slash_info(interaction: discord.Interaction):
 async def slash_cmd(interaction: discord.Interaction):
     embed = discord.Embed(title="🤖 SCRIM Bot — Commands", color=discord.Color.blurple())
 
-    embed.add_field(name="⚙️ Setup", value=(
-        "`/setup` — Configure bot for this server *(Admin only)*\n"
+    embed.add_field(name="⚙️ Setup *(Admin only)*", value=(
+        "`/setup` — Step-by-step server configuration wizard\n"
         "`/setupshow` — Show current server configuration\n"
         "`/setupreset` — Reset server configuration"
     ), inline=False)
@@ -2529,10 +2540,11 @@ async def slash_cmd(interaction: discord.Interaction):
     ), inline=False)
 
     embed.add_field(name="🎟️ Tournament Scrim", value=(
-        "`/tournament_create` — Create team scrim with ticket registration\n"
+        "`/tournament_create` — Create tournament (team, solo, FFA, multi-group)\n"
+        "Formats: `3v3`, `3v3v3v3`, `1v1`, `ffa8`, `ffa16` …\n"
         "`/tournament_list` — Show all registered teams\n"
         "`/tournament_close` — Close registrations\n"
-        "`/tournament_start` — Create private team voice channels\n"
+        "`/tournament_start` — Assign roles & create team VCs\n"
         "`/tournament_delete` — End tournament & full cleanup"
     ), inline=False)
 
@@ -2542,13 +2554,19 @@ async def slash_cmd(interaction: discord.Interaction):
         "`/stopupdate` — Stop auto-check & remove roles"
     ), inline=False)
 
+    embed.add_field(name="🏆 Game Tracking", value=(
+        "`/game_winner` — Log a game result\n"
+        "`/winner` — Add wins manually\n"
+        "`/removewins` — Remove wins from a player"
+    ), inline=False)
+
     embed.add_field(name="📊 Stats & Season", value=(
         "`/stats` / `/stats_top` — Player stats\n"
         "`/season_reset` — Save quarter to all-time & reset\n"
         "`/season_show` — All-time leaderboard"
     ), inline=False)
 
-    embed.add_field(name="🔄 Regular Scrim Workflow", value=(
+    embed.add_field(name="🔄 Regular Workflow", value=(
         "`/create` → `/join` → `/event_update` → log games → `/event_leaderboard` → `/delete_event`"
     ), inline=False)
 
