@@ -102,16 +102,17 @@ def has_allowed_role():
 
 # Mapping from config key → hardcoded fallback constant
 _DEFAULTS = {
-    "channel_id":             CHANNEL_ID,
-    "role_id":                ROLE_ID,
-    "active_role_id":         ACTIVE_ROLE_ID,
-    "spectator_role_id":      SPECTATOR_ROLE_ID,
-    "mention_roles":          MENTION_ROLES,
-    "scrim_chat_id":          SCRIM_CHAT_ID,
-    "event_channel_id":       EVENT_CHANNEL_ID,
-    "game_links_id":          GAME_LINKS_ID,
-    "leaderboard_channel_id": LEADERBOARD_CHANNEL_ID,
-    "allowed_roles":          ALLOWED_ROLES,
+    "channel_id":                   CHANNEL_ID,
+    "role_id":                      ROLE_ID,
+    "active_role_id":               ACTIVE_ROLE_ID,
+    "spectator_role_id":            SPECTATOR_ROLE_ID,
+    "mention_roles":                MENTION_ROLES,
+    "scrim_chat_id":                SCRIM_CHAT_ID,
+    "event_channel_id":             EVENT_CHANNEL_ID,
+    "game_links_id":                GAME_LINKS_ID,
+    "leaderboard_channel_id":       LEADERBOARD_CHANNEL_ID,
+    "registered_teams_channel_id":  1496878585905152031,
+    "allowed_roles":                ALLOWED_ROLES,
 }
 
 def load_guild_configs() -> dict:
@@ -147,7 +148,7 @@ def is_configured(guild_id) -> bool:
     cfg = configs.get(str(guild_id), {})
     required = ["channel_id", "role_id", "active_role_id", "spectator_role_id",
                 "scrim_chat_id", "event_channel_id", "game_links_id",
-                "leaderboard_channel_id", "allowed_roles"]
+                "leaderboard_channel_id", "registered_teams_channel_id", "allowed_roles"]
     return all(k in cfg for k in required)
 
 
@@ -823,16 +824,17 @@ async def on_message(message):
 # Usage: r!setup
 
 SETUP_STEPS = [
-    ("channel_id",             "📋 **Registration Channel**\nMention the channel where event posts go (e.g. #register-for-scrim)"),
-    ("scrim_chat_id",          "💬 **Scrim Chat Channel**\nMention the channel that gets cleared after each scrim (e.g. #scrim-chat)"),
-    ("game_links_id",          "🔗 **Game Links Channel**\nMention the channel where winner messages are posted (e.g. #game-links)"),
-    ("leaderboard_channel_id", "🏆 **Leaderboard Channel**\nMention the channel where the leaderboard embed gets posted (e.g. #scrim-leaderboard)"),
-    ("event_channel_id",       "🔊 **Meeting Point Voice Channel**\nMention the voice channel that the bot joins to keep the event alive.\n> Voice channels can't be mentioned with # like text channels.\n> Use this format instead: `<#CHANNEL_ID>`\n> To get the ID: right-click the voice channel → Copy Channel ID, then type `<#` + the ID + `>`\n> Example: `<#1467091170176929968>`"),
-    ("role_id",                "✅ **Scrim Registration Role**\nMention the role players receive when they react ✅ (e.g. @Scrim Player)"),
-    ("active_role_id",         "🎮 **Active Scrim Role**\nMention the role given to players in game VCs (e.g. @Active Scrim)"),
-    ("spectator_role_id",      "👁️ **Spectator Role**\nMention the role given to players in the Meeting Point or unregistered players (e.g. @Spectator Scrim)"),
-    ("mention_roles",          "📣 **Ping Roles** (for event announcements)\nMention ALL roles that should be pinged when an event is created (e.g. @Scrim News @Everyone)\n> Separate multiple roles with spaces"),
-    ("allowed_roles",          "🔒 **Staff/Host Roles**\nMention ALL roles that are allowed to use bot commands (e.g. @Staff @Host)\n> Separate multiple roles with spaces"),
+    ("channel_id",                "📋 **Registration Channel**\nMention the channel where event posts go (e.g. #register-for-scrim)"),
+    ("scrim_chat_id",             "💬 **Scrim Chat Channel**\nMention the channel that gets cleared after each scrim (e.g. #scrim-chat)"),
+    ("game_links_id",             "🔗 **Game Links Channel**\nMention the channel where winner messages are posted (e.g. #game-links)"),
+    ("leaderboard_channel_id",    "🏆 **Leaderboard Channel**\nMention the channel where the leaderboard embed gets posted (e.g. #scrim-leaderboard)"),
+    ("registered_teams_channel_id", "🎟️ **Registered Teams Channel**\nMention the channel where accepted tournament teams are listed (e.g. #registered-teams)"),
+    ("event_channel_id",          "🔊 **Meeting Point Voice Channel**\nMention the voice channel that the bot joins to keep the event alive.\n> Voice channels can't be mentioned with # like text channels.\n> Use this format instead: `<#CHANNEL_ID>`\n> To get the ID: right-click the voice channel → Copy Channel ID, then type `<#` + the ID + `>`\n> Example: `<#1467091170176929968>`"),
+    ("role_id",                   "✅ **Scrim Registration Role**\nMention the role players receive when they react ✅ (e.g. @Scrim Player)"),
+    ("active_role_id",            "🎮 **Active Scrim Role**\nMention the role given to players in game VCs (e.g. @Active Scrim)"),
+    ("spectator_role_id",         "👁️ **Spectator Role**\nMention the role given to players in the Meeting Point or unregistered players (e.g. @Spectator Scrim)"),
+    ("mention_roles",             "📣 **Ping Roles** (for event announcements)\nMention ALL roles that should be pinged when an event is created (e.g. @Scrim News @Everyone)\n> Separate multiple roles with spaces"),
+    ("allowed_roles",             "🔒 **Staff/Host Roles**\nMention ALL roles that are allowed to use bot commands (e.g. @Staff @Host)\n> Separate multiple roles with spaces"),
 ]
 
 
@@ -886,18 +888,20 @@ async def setup_show(ctx):
 
     lines = []
     key_labels = {
-        "channel_id":             "Registration Channel",
-        "scrim_chat_id":          "Scrim Chat",
-        "game_links_id":          "Game Links",
-        "leaderboard_channel_id": "Leaderboard",
-        "event_channel_id":       "Meeting Point VC",
-        "role_id":                "Scrim Registration Role",
-        "active_role_id":         "Active Scrim Role",
-        "spectator_role_id":      "Spectator Role",
-        "mention_roles":          "Ping Roles",
-        "allowed_roles":          "Staff/Host Roles",
+        "channel_id":                   "Registration Channel",
+        "scrim_chat_id":                "Scrim Chat",
+        "game_links_id":                "Game Links",
+        "leaderboard_channel_id":       "Leaderboard",
+        "registered_teams_channel_id":  "Registered Teams",
+        "event_channel_id":             "Meeting Point VC",
+        "role_id":                      "Scrim Registration Role",
+        "active_role_id":               "Active Scrim Role",
+        "spectator_role_id":            "Spectator Role",
+        "mention_roles":                "Ping Roles",
+        "allowed_roles":                "Staff/Host Roles",
     }
-    channel_keys = {"channel_id", "scrim_chat_id", "game_links_id", "leaderboard_channel_id", "event_channel_id"}
+    channel_keys = {"channel_id", "scrim_chat_id", "game_links_id", "leaderboard_channel_id",
+                    "registered_teams_channel_id", "event_channel_id"}
     role_keys    = {"role_id", "active_role_id", "spectator_role_id"}
     list_keys    = {"mention_roles", "allowed_roles"}
 
@@ -1981,24 +1985,18 @@ async def cmd(ctx):
         "`r!join` / `r!leave` — Bot joins/leaves Meeting Point VC"
     ), inline=False)
 
-    embed.add_field(name="🎮 Scrim Session", value=(
-        "`r!event update` — Assign Active/Spectator roles\n"
-        "`r!event leaderboard` — Post updated leaderboard\n"
-        "`r!stopupdate` — Stop auto-check & remove roles"
-    ), inline=False)
-
-    embed.add_field(name="🏆 Game Tracking", value=(
-        "`r!game winner @A @B` — Log a game result\n"
-        "`r!winner @A` — Add wins manually\n"
-        "`r!removewins @Player [amount]` — Remove wins"
-    ), inline=False)
-
     embed.add_field(name="🎟️ Tournament Scrim", value=(
         "`r!tournament create SIZE, TEAMS, SUBS, Title, Desc, <t:TS:R>`\n"
         "`r!tournament list` — Show all registered teams\n"
         "`r!tournament close` — Close registrations\n"
         "`r!tournament start` — Create private team voice channels\n"
         "`r!tournament delete` — End tournament & full cleanup"
+    ), inline=False)
+
+    embed.add_field(name="🎮 Scrim Session", value=(
+        "`r!event update` — Assign Active/Spectator roles\n"
+        "`r!event leaderboard` — Post updated leaderboard\n"
+        "`r!stopupdate` — Stop auto-check & remove roles"
     ), inline=False)
 
     embed.add_field(name="📊 Stats & Season", value=(
@@ -2526,24 +2524,18 @@ async def slash_cmd(interaction: discord.Interaction):
         "`/join` / `/leave` — Bot joins/leaves Meeting Point VC"
     ), inline=False)
 
-    embed.add_field(name="🎮 Scrim Session", value=(
-        "`/event_update` — Assign Active/Spectator roles\n"
-        "`/event_leaderboard` — Post updated leaderboard\n"
-        "`/stopupdate` — Stop auto-check & remove roles"
-    ), inline=False)
-
-    embed.add_field(name="🏆 Game Tracking", value=(
-        "`/game_winner` — Log a game result\n"
-        "`/winner` — Add wins manually\n"
-        "`/removewins` — Remove wins from a player"
-    ), inline=False)
-
     embed.add_field(name="🎟️ Tournament Scrim", value=(
         "`/tournament_create` — Create team scrim with ticket registration\n"
         "`/tournament_list` — Show all registered teams\n"
         "`/tournament_close` — Close registrations\n"
         "`/tournament_start` — Create private team voice channels\n"
         "`/tournament_delete` — End tournament & full cleanup"
+    ), inline=False)
+
+    embed.add_field(name="🎮 Scrim Session", value=(
+        "`/event_update` — Assign Active/Spectator roles\n"
+        "`/event_leaderboard` — Post updated leaderboard\n"
+        "`/stopupdate` — Stop auto-check & remove roles"
     ), inline=False)
 
     embed.add_field(name="📊 Stats & Season", value=(
@@ -2679,12 +2671,15 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
     else:
         lines = []
         for i, team in enumerate(accepted):
-            player_list = " · ".join(f"**{p['name']}** <@{p['discord_id']}>" for p in team["players"])
-            line = f"**{i+1}. {team['tag']} {team['name']}**\n{player_list}"
+            line = f"**{i+1}. {team['tag']} {team['name']}**"
+            coaches = team.get("coaches", [])
+            if coaches:
+                line += "\n🧑‍🏫 " + " · ".join(f"**{c['name']}**" for c in coaches)
+            line += f"\n👤 **{team.get('captain_name', '?')}** (Captain)"
+            line += "\n🎮 " + " · ".join(f"**{p['name']}**" for p in team["players"])
             subs = team.get("substitutes_list", [])
             if subs:
-                sub_list = " · ".join(f"**{p['name']}** <@{p['discord_id']}>" for p in subs)
-                line += f"\n*Subs: {sub_list}*"
+                line += "\n🔄 " + " · ".join(f"**{p['name']}**" for p in subs)
             lines.append(line)
         roster_embed = discord.Embed(
             title=f"🏆 {t_data.get('title', 'Team Scrim')} — Registered Teams",
@@ -2854,6 +2849,30 @@ class TeamApprovalView(discord.ui.View):
         # Give Scrim Player role to accepted team members immediately
         await give_scrim_role_to_team(interaction.guild, team, self.guild_id)
 
+        # Give coaches Spectator role + access to game-links (view) and scrim-chat (send+view)
+        spectator_role   = interaction.guild.get_role(get_cfg(self.guild_id, "spectator_role_id"))
+        game_links_ch    = interaction.guild.get_channel(get_cfg(self.guild_id, "game_links_id"))
+        scrim_chat_ch    = interaction.guild.get_channel(get_cfg(self.guild_id, "scrim_chat_id"))
+        for coach in team.get("coaches", []):
+            member = interaction.guild.get_member(int(coach["discord_id"]))
+            if not member:
+                continue
+            if spectator_role and spectator_role not in member.roles:
+                try:
+                    await member.add_roles(spectator_role)
+                except Exception as e:
+                    print(f"Could not give spectator role to coach {coach['discord_id']}: {e}")
+            if game_links_ch:
+                try:
+                    await game_links_ch.set_permissions(member, view_channel=True, send_messages=False, read_message_history=True)
+                except Exception as e:
+                    print(f"Could not set game-links perms for coach: {e}")
+            if scrim_chat_ch:
+                try:
+                    await scrim_chat_ch.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+                except Exception as e:
+                    print(f"Could not set scrim-chat perms for coach: {e}")
+
         # Notify the team in their ticket channel
         ticket_ch_id = team.get("ticket_channel_id")
         if ticket_ch_id:
@@ -2927,12 +2946,11 @@ async def handle_ticket_message(message: discord.Message):
     t_data      = load_tournament(guild_id)
     team_size   = t_data.get("team_size", 1) if t_data else 1
     substitutes = t_data.get("substitutes", 0) if t_data else 0
-    total_slots = team_size + substitutes  # total people to collect (starters + subs)
     content     = message.content.strip()
 
     if content.lower() == "cancel":
         del active_tickets[message.channel.id]
-        await message.channel.send("❌ Registration cancelled. This channel will be deleted in 10 seconds.")
+        await message.channel.send("\u274c Registration cancelled. This channel will be deleted in 10 seconds.")
         await asyncio.sleep(10)
         try:
             await message.channel.delete()
@@ -2942,154 +2960,214 @@ async def handle_ticket_message(message: discord.Message):
 
     step = state["step"]
 
-    # ── Step 1: Team Name & Tag ────────────────────────────────────────────────
+    # Step 1: Team Name & Tag
     if step == 1:
-        state["data"]["raw_name_tag"] = content
         import re
         tag_match = re.search(r'\[(.+?)\]', content)
         if tag_match:
             tag  = f"[{tag_match.group(1)}]"
             name = content.replace(tag_match.group(0), "").strip()
         else:
-            parts = content.rsplit(" ", 1)
-            name  = parts[0].strip()
-            tag   = parts[1].strip() if len(parts) > 1 else ""
-
+            ps = content.rsplit(" ", 1)
+            name = ps[0].strip()
+            tag  = ps[1].strip() if len(ps) > 1 else ""
         state["data"]["team_name"] = name
         state["data"]["team_tag"]  = tag
         state["step"] = 2
-
-        sub_hint = f" + {substitutes} substitute(s)" if substitutes > 0 else ""
-        embed = discord.Embed(
-            title="🎟️ Team Registration — Step 2 of 3",
-            description=(
-                f"✅ Team: **{tag} {name}**\n\n"
-                f"Now please enter the **in-game names** of all **{team_size} starter(s){sub_hint}**, one per line.\n"
-                + (f"*(Enter starters first, then substitutes)*\n" if substitutes > 0 else "") +
-                f"\nExample:\n`PlayerOne\nPlayerTwo" + ("\nSubOne" if substitutes > 0 else "") + "`"
-            ),
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Step 2 / 6", color=discord.Color.blurple())
+        embed.add_field(name="\u2705 Team", value=f"**{tag} {name}**", inline=False)
+        embed.add_field(name="\U0001f464 Captain", value=f"Enter the **in-game name** of your captain.\nThe captain is the main contact person for your team.\n\nExample: `Biffeur`", inline=False)
+        embed.set_footer(text="Type cancel at any time to abort")
         await message.channel.send(embed=embed)
 
-    # ── Step 2: Player names ───────────────────────────────────────────────────
+    # Step 2: Captain name
     elif step == 2:
-        names = [n.strip() for n in content.split("\n") if n.strip()]
-        if len(names) != total_slots:
-            sub_note = f" ({team_size} starters + {substitutes} substitute(s))" if substitutes > 0 else ""
-            await message.channel.send(
-                f"❌ Please enter exactly **{total_slots}** name(s){sub_note}, one per line. You entered {len(names)}."
-            )
+        if not content:
+            await message.channel.send("\u274c Please enter the captain's in-game name.")
             return
-
-        state["data"]["player_names"] = names
+        state["data"]["captain_name"] = content
         state["step"] = 3
-
-        sub_note = f"\n*(First {team_size} = starters, last {substitutes} = substitutes)*" if substitutes > 0 else ""
-        embed = discord.Embed(
-            title="🎟️ Team Registration — Step 3 of 3",
-            description=(
-                f"✅ Players: {', '.join(names)}{sub_note}\n\n"
-                f"Now please enter the **Discord User ID** of each player, one per line "
-                f"(same order as names above).\n\n"
-                f"To get a User ID: Right-click a user → **Copy User ID** *(Developer Mode must be on)*\n\n"
-                f"Example:\n`123456789012345678\n987654321098765432"
-                + ("\n112233445566778899" if substitutes > 0 else "") + "`"
-            ),
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Step 3 / 6", color=discord.Color.blurple())
+        embed.add_field(name="\u2705 Captain", value=f"**{content}**", inline=False)
+        embed.add_field(name="\U0001f194 Captain Discord User ID", value="Enter the **Discord User ID** of the captain.\n\nRight-click the user \u2192 **Copy User ID**\n*(Developer Mode must be on in Discord Settings)*\n\nExample: `123456789012345678`", inline=False)
+        embed.set_footer(text="Type cancel at any time to abort")
         await message.channel.send(embed=embed)
 
-    # ── Step 3: Discord User IDs ───────────────────────────────────────────────
+    # Step 3: Captain ID
     elif step == 3:
-        raw_ids = [i.strip() for i in content.replace(",", "\n").split("\n") if i.strip()]
-        ids     = [i for i in raw_ids if i.isdigit()]
-
-        if len(ids) != total_slots:
-            sub_note = f" ({team_size} starters + {substitutes} sub(s))" if substitutes > 0 else ""
-            await message.channel.send(
-                f"❌ Please enter exactly **{total_slots}** Discord User ID(s){sub_note}, one per line. "
-                f"You entered {len(ids)} valid ID(s)."
-            )
+        if not content.isdigit():
+            await message.channel.send("\u274c Please enter a valid Discord User ID (numbers only).")
             return
+        state["data"]["captain_id"] = content
+        state["step"] = 4
+        embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Step 4 / 6", color=discord.Color.blurple())
+        embed.add_field(name="\u2705 Captain", value=f"<@{content}>", inline=False)
+        embed.add_field(name=f"\U0001f3ae Starters ({team_size})", value=f"Enter the **in-game names** of all **{team_size} starter(s)**, one per line.\n\nExample:\n```\nPlayerOne\nPlayerTwo\nPlayerThree\n```", inline=False)
+        if substitutes > 0:
+            embed.set_footer(text=f"After this: IDs \u2192 substitutes ({substitutes}) \u2192 coaches | Type cancel to abort")
+        else:
+            embed.set_footer(text="After this: IDs \u2192 coaches (optional) | Type cancel to abort")
+        await message.channel.send(embed=embed)
 
-        names = state["data"]["player_names"]
+    # Step 4: Starter names
+    elif step == 4:
+        names = [n.strip() for n in content.split("\n") if n.strip()]
+        if len(names) != team_size:
+            await message.channel.send(f"\u274c Please enter exactly **{team_size}** starter name(s), one per line. You entered {len(names)}.")
+            return
+        state["data"]["player_names"] = names
+        state["step"] = 5
+        embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Step 5 / 6", color=discord.Color.blurple())
+        embed.add_field(name="\u2705 Starters", value="\n".join(f"\u2022 {n}" for n in names), inline=False)
+        embed.add_field(name=f"\U0001f194 Starter IDs ({team_size})", value=f"Enter the **Discord User IDs** of the {team_size} starters, one per line.\n*(Same order as names)*\n\nExample:\n```\n123456789012345678\n987654321098765432\n```", inline=False)
+        embed.set_footer(text="Type cancel at any time to abort")
+        await message.channel.send(embed=embed)
 
-        # Check for duplicates in existing accepted teams
+    # Step 5: Starter IDs
+    elif step == 5:
+        raw_ids = [i.strip() for i in content.replace(",", "\n").split("\n") if i.strip()]
+        ids = [i for i in raw_ids if i.isdigit()]
+        if len(ids) != team_size:
+            await message.channel.send(f"\u274c Please enter exactly **{team_size}** User ID(s), one per line. You entered {len(ids)}.")
+            return
+        captain_id = state["data"].get("captain_id", "")
+        all_ids_so_far = [captain_id] + ids
+        if len(set(all_ids_so_far)) < len(all_ids_so_far):
+            await message.channel.send("\u274c Duplicate User IDs detected! Each player can only appear once. Please re-enter.")
+            return
+        state["data"]["player_ids"] = ids
+        if substitutes > 0:
+            state["step"] = 6
+            embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Step 6 / 6", color=discord.Color.blurple())
+            embed.add_field(name=f"\U0001f504 Substitutes ({substitutes})", value=f"Enter **{substitutes}** substitute(s).\nFormat: `Name: USER_ID`, one per line.\n\nExample:\n```\nSubOne: 112233445566778899\n```", inline=False)
+            embed.set_footer(text="After this: coaches (optional) | Type cancel to abort")
+            await message.channel.send(embed=embed)
+        else:
+            state["step"] = 7
+            embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Coaches (Optional)", color=discord.Color.blurple())
+            embed.add_field(name="\U0001f9d1\u200d\U0001f3eb Coaches", value="Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if you have no coaches.\n\nExample:\n```\nCoachMike: 123456789012345678\n```", inline=False)
+            embed.set_footer(text="Coaches get Spectator role + access to game-links & scrim-chat")
+            await message.channel.send(embed=embed)
+
+    # Step 6: Substitutes
+    elif step == 6:
+        lines = [l.strip() for l in content.split("\n") if l.strip()]
+        subs = []
+        errors = []
+        for line in lines:
+            if ":" in line:
+                pc = line.split(":", 1)
+                nm, uid = pc[0].strip(), pc[1].strip()
+                if uid.isdigit():
+                    subs.append({"name": nm, "discord_id": uid})
+                else:
+                    errors.append(f"Invalid ID for `{nm}`")
+            else:
+                errors.append(f"Invalid format: `{line}` (use `Name: USER_ID`)")
+        if errors:
+            await message.channel.send("\u274c Errors:\n" + "\n".join(errors) + "\nPlease re-enter all substitutes.")
+            return
+        if len(subs) != substitutes:
+            await message.channel.send(f"\u274c Please enter exactly **{substitutes}** substitute(s). You entered {len(subs)}.")
+            return
+        captain_id = state["data"].get("captain_id", "")
+        all_ids = [captain_id] + state["data"]["player_ids"] + [s["discord_id"] for s in subs]
+        if len(set(all_ids)) < len(all_ids):
+            await message.channel.send("\u274c Duplicate User IDs detected!")
+            return
+        state["data"]["subs"] = subs
+        state["step"] = 7
+        embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Coaches (Optional)", color=discord.Color.blurple())
+        embed.add_field(name="\U0001f9d1\u200d\U0001f3eb Coaches", value="Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if you have no coaches.\n\nExample:\n```\nCoachMike: 123456789012345678\n```", inline=False)
+        embed.set_footer(text="Coaches get Spectator role + access to game-links & scrim-chat")
+        await message.channel.send(embed=embed)
+
+    # Step 7: Coaches
+    elif step == 7:
+        coaches = []
+        if content.lower() != "none":
+            lines = [l.strip() for l in content.split("\n") if l.strip()]
+            errors = []
+            for line in lines:
+                if ":" in line:
+                    pc = line.split(":", 1)
+                    nm, uid = pc[0].strip(), pc[1].strip()
+                    if uid.isdigit():
+                        coaches.append({"name": nm, "discord_id": uid})
+                    else:
+                        errors.append(f"Invalid ID for `{nm}`")
+                else:
+                    errors.append(f"Invalid format: `{line}` (use `Name: USER_ID`)")
+            if errors:
+                await message.channel.send("\u274c Errors:\n" + "\n".join(errors) + "\nRe-enter coaches or type `none`.")
+                return
+            captain_id = state["data"].get("captain_id", "")
+            all_ids = [captain_id] + state["data"].get("player_ids", []) + [s["discord_id"] for s in state["data"].get("subs", [])] + [c["discord_id"] for c in coaches]
+            if len(set(all_ids)) < len(all_ids):
+                await message.channel.send("\u274c Duplicate User IDs detected!")
+                return
+        state["data"]["coaches"] = coaches
+
+        # Build team
+        names      = state["data"]["player_names"]
+        ids        = state["data"]["player_ids"]
+        captain_id = state["data"]["captain_id"]
+        subs       = state["data"].get("subs", [])
+
         existing_ids = []
         for t in t_data.get("teams", []):
             if t.get("status") == "accepted":
                 existing_ids.extend([p["discord_id"] for p in t.get("players", [])])
                 existing_ids.extend([p["discord_id"] for p in t.get("substitutes_list", [])])
-        if any(pid in existing_ids for pid in ids):
-            await message.channel.send("❌ One or more players are already registered in an accepted team.")
+                existing_ids.extend([p["discord_id"] for p in t.get("coaches", [])])
+                existing_ids.append(t.get("captain_id", ""))
+        all_new_ids = [captain_id] + ids + [s["discord_id"] for s in subs] + [c["discord_id"] for c in coaches]
+        if any(pid in existing_ids for pid in all_new_ids):
+            await message.channel.send("\u274c One or more players are already in an accepted team.")
             return
 
-        # Split into starters and substitutes
-        starters   = [{"name": names[i], "discord_id": ids[i]} for i in range(team_size)]
-        subs_list  = [{"name": names[team_size + i], "discord_id": ids[team_size + i]} for i in range(substitutes)]
-
-        team_id = f"team_{len(t_data.get('teams', []))}"
-        team    = {
-            "team_id":           team_id,
-            "name":              state["data"]["team_name"],
-            "tag":               state["data"]["team_tag"],
-            "players":           starters,
-            "substitutes_list":  subs_list,
-            "status":            "pending",
-            "submitter":         str(state["user_id"]),
-            "ticket_channel_id": message.channel.id,
-            "channel_id":        None
+        starters = [{"name": names[i], "discord_id": ids[i]} for i in range(team_size)]
+        team_id  = f"team_{len(t_data.get('teams', []))}"
+        team     = {
+            "team_id": team_id, "name": state["data"]["team_name"], "tag": state["data"]["team_tag"],
+            "captain_name": state["data"]["captain_name"], "captain_id": captain_id,
+            "players": starters, "substitutes_list": subs, "coaches": coaches,
+            "status": "pending", "submitter": str(state["user_id"]),
+            "ticket_channel_id": message.channel.id, "channel_id": None
         }
         t_data.setdefault("teams", []).append(team)
         save_tournament(guild_id, t_data)
 
-        # Summary embed in ticket
-        starter_lines = "\n".join(f"• **{p['name']}** — <@{p['discord_id']}>" for p in starters)
-        sub_lines     = "\n".join(f"• **{p['name']}** — <@{p['discord_id']}>" for p in subs_list)
-        summary_desc  = f"**Team:** {team['tag']} {team['name']}\n\n**Starters:**\n{starter_lines}"
-        if subs_list:
-            summary_desc += f"\n\n**Substitutes:**\n{sub_lines}"
-        summary_desc += "\n\nYour registration has been submitted! A host will review it shortly."
-
-        summary = discord.Embed(
-            title="📋 Registration Summary",
-            description=summary_desc,
-            color=discord.Color.green()
-        )
+        # Summary
+        summary = discord.Embed(title="\U0001f4cb Registration Summary", description=f"**{team['tag']} {team['name']}**", color=discord.Color.green())
+        if coaches:
+            summary.add_field(name=f"\U0001f9d1\u200d\U0001f3eb Coaches ({len(coaches)})", value="\n".join(f"\u2022 **{c['name']}** \u2014 <@{c['discord_id']}>" for c in coaches), inline=False)
+        summary.add_field(name="\U0001f464 Captain", value=f"\u2022 **{team['captain_name']}** \u2014 <@{captain_id}>", inline=False)
+        summary.add_field(name=f"\U0001f3ae Starters ({team_size})", value="\n".join(f"\u2022 **{p['name']}** \u2014 <@{p['discord_id']}>" for p in starters), inline=False)
+        if subs:
+            summary.add_field(name=f"\U0001f504 Substitutes ({len(subs)})", value="\n".join(f"\u2022 **{p['name']}** \u2014 <@{p['discord_id']}>" for p in subs), inline=False)
+        summary.add_field(name="\U0001f4ec Status", value="Submitted \u2014 waiting for host review.", inline=False)
+        summary.set_footer(text="A host will accept or reject your team shortly.")
         await message.channel.send(embed=summary)
 
-        # Post to staff review channel
-        guild        = message.guild
+        # Review
+        guild = message.guild
         review_ch_id = t_data.get("review_channel_id")
-        review_ch    = guild.get_channel(review_ch_id) if review_ch_id else bot.get_channel(get_cfg(guild_id, "scrim_chat_id"))
-
+        review_ch = guild.get_channel(review_ch_id) if review_ch_id else bot.get_channel(get_cfg(guild_id, "scrim_chat_id"))
         if review_ch:
-            review_embed = discord.Embed(
-                title=f"📋 New Team — {team['tag']} {team['name']}",
-                color=discord.Color.orange()
-            )
-            review_embed.add_field(name="Team Name", value=team["name"], inline=True)
-            review_embed.add_field(name="Tag",       value=team["tag"],  inline=True)
-            review_embed.add_field(
-                name=f"Starters ({team_size})",
-                value="\n".join(f"**{p['name']}** — <@{p['discord_id']}>" for p in starters),
-                inline=False
-            )
-            if subs_list:
-                review_embed.add_field(
-                    name=f"Substitutes ({substitutes})",
-                    value="\n".join(f"**{p['name']}** — <@{p['discord_id']}>" for p in subs_list),
-                    inline=False
-                )
-            review_embed.add_field(name="Submitted by", value=f"<@{state['user_id']}>", inline=False)
-            review_embed.set_footer(text=f"Team ID: {team_id}")
-
+            review = discord.Embed(title=f"\U0001f4cb New Team \u2014 {team['tag']} {team['name']}", color=discord.Color.orange())
+            if coaches:
+                review.add_field(name=f"\U0001f9d1\u200d\U0001f3eb Coaches ({len(coaches)})", value="\n".join(f"**{c['name']}** \u2014 <@{c['discord_id']}>" for c in coaches), inline=False)
+            review.add_field(name="\U0001f464 Captain", value=f"**{team['captain_name']}** \u2014 <@{captain_id}>", inline=False)
+            review.add_field(name=f"\U0001f3ae Starters ({team_size})", value="\n".join(f"**{p['name']}** \u2014 <@{p['discord_id']}>" for p in starters), inline=False)
+            if subs:
+                review.add_field(name=f"\U0001f504 Substitutes ({len(subs)})", value="\n".join(f"**{p['name']}** \u2014 <@{p['discord_id']}>" for p in subs), inline=False)
+            review.add_field(name="Submitted by", value=f"<@{state['user_id']}>", inline=False)
+            review.set_footer(text=f"Team ID: {team_id}")
             view = TeamApprovalView(guild_id=guild_id, team_id=team_id)
-            await review_ch.send(embed=review_embed, view=view)
+            await review_ch.send(embed=review, view=view)
 
         del active_tickets[message.channel.id]
-
 
 # ── r!tournament command ───────────────────────────────────────────────────────
 
@@ -3198,7 +3276,7 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             "closed":            False,
             "event_id":          event.id if event else None,
             "review_channel_id": review_ch.id,
-            "roster_channel_id": 1496878585905152031,  # Dedicated roster channel
+            "roster_channel_id": get_cfg(guild.id, "registered_teams_channel_id"),
             "roster_message_id": None,
             "register_message_id": None,
             "teams":             []
@@ -3260,12 +3338,15 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         if accepted:
             acc_lines = []
             for t in accepted:
-                starters = ", ".join(f"**{p['name']}**" for p in t["players"])
-                line     = f"**{t['tag']} {t['name']}** — {starters}"
-                subs     = t.get("substitutes_list", [])
+                coaches = t.get("coaches", [])
+                line = f"**{t['tag']} {t['name']}**"
+                if coaches:
+                    line += "\n🧑‍🏫 " + ", ".join(f"**{c['name']}**" for c in coaches)
+                line += f"\n👤 **{t.get('captain_name','?')}** (Captain)"
+                line += "\n🎮 " + ", ".join(f"**{p['name']}**" for p in t["players"])
+                subs = t.get("substitutes_list", [])
                 if subs:
-                    sub_names = ", ".join(f"**{p['name']}**" for p in subs)
-                    line += f"\n*Subs: {sub_names}*"
+                    line += "\n🔄 " + ", ".join(f"**{p['name']}**" for p in subs)
                 acc_lines.append(line)
             embed.add_field(
                 name=f"✅ Accepted ({len(accepted)}/{t_data['max_teams']})",
@@ -3502,19 +3583,42 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             except Exception as e:
                 print(f"Error cleaning register channel: {e}")
 
-        # Remove Scrim Player role from all accepted tournament players including subs
-        scrim_role = guild.get_role(get_cfg(guild.id, "role_id"))
-        if scrim_role and t_data.get("teams"):
+        # Remove Scrim Player/Spectator roles and coach channel perms from all accepted players
+        scrim_role     = guild.get_role(get_cfg(guild.id, "role_id"))
+        spectator_role = guild.get_role(get_cfg(guild.id, "spectator_role_id"))
+        game_links_ch  = guild.get_channel(get_cfg(guild.id, "game_links_id"))
+        scrim_chat_ch  = guild.get_channel(get_cfg(guild.id, "scrim_chat_id"))
+
+        if t_data.get("teams"):
             for team in t_data["teams"]:
                 if team.get("status") == "accepted":
                     all_players = team.get("players", []) + team.get("substitutes_list", [])
                     for player in all_players:
                         member = guild.get_member(int(player["discord_id"]))
-                        if member and scrim_role in member.roles:
+                        if member and scrim_role and scrim_role in member.roles:
                             try:
                                 await member.remove_roles(scrim_role)
-                            except Exception as e:
-                                print(f"Could not remove scrim role from {player['discord_id']}: {e}")
+                            except Exception:
+                                pass
+                    for coach in team.get("coaches", []):
+                        member = guild.get_member(int(coach["discord_id"]))
+                        if not member:
+                            continue
+                        if spectator_role and spectator_role in member.roles:
+                            try:
+                                await member.remove_roles(spectator_role)
+                            except Exception:
+                                pass
+                        if game_links_ch:
+                            try:
+                                await game_links_ch.set_permissions(member, overwrite=None)
+                            except Exception:
+                                pass
+                        if scrim_chat_ch:
+                            try:
+                                await scrim_chat_ch.set_permissions(member, overwrite=None)
+                            except Exception:
+                                pass
 
         clear_tournament(guild.id)
         await ctx.send(f"✅ Tournament deleted. Removed **{deleted}** team channel(s).")
