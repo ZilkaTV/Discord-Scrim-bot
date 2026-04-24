@@ -1936,78 +1936,86 @@ async def winner(ctx, *, args=None):
 @bot.command()
 async def info(ctx):
     embed = discord.Embed(
-        title="[SCRIM] Bot — Info",
+        title="🤖 SCRIM Bot — Info",
         description=(
             "The SCRIM Bot manages competitive scrim sessions on this server.\n\n"
-            "**What it does:**\n"
-            "- Creates and manages Discord scheduled events for scrims\n"
-            "- Posts registration messages — players react with ✅ to sign up\n"
-            "- Automatically assigns **Active Scrim** and **Spectator** roles based on voice channel activity\n"
-            "- Tracks game results and win streaks for every player\n"
-            "- Maintains a live leaderboard with points and stats\n"
-            "- Sends a 30-minute warning before each event starts\n"
-            "- Stays in the Meeting Point voice channel to keep the event alive\n"
-            "- Cleans up all messages, roles and events at the end of a scrim\n\n"
-            "**Prefix:** `r!`\n"
-            "**Commands:** Use `r!cmd` for a full list\n"
-            "**Permissions:** Most commands require the **Staff** or **Host** role"
+            "**Regular Scrims:**\n"
+            "- Creates Discord scheduled events with ✅ reaction sign-up\n"
+            "- Assigns **Active Scrim** and **Spectator** roles based on voice channels\n"
+            "- Tracks game results, win streaks, winrates and attendance\n"
+            "- Maintains a quarterly leaderboard with all-time stats\n"
+            "- Sends a 30-minute warning before events start\n"
+            "- Stays in the Meeting Point VC to keep events alive\n\n"
+            "**Tournament Scrims:**\n"
+            "- Creates team scrims with a ticket-based registration system\n"
+            "- Players register via button → private ticket channel → step-by-step form\n"
+            "- Staff accepts/rejects teams via buttons\n"
+            "- Creates private voice channels per team when the scrim starts\n"
+            "- Supports substitutes per team\n\n"
+            "**New Server Setup:** Use `/setup` or `r!setup`\n"
+            "**All Commands:** Use `/cmd` or `r!cmd`\n"
+            "**Permissions:** Most commands require **Staff** or **Host** role"
         ),
         color=discord.Color.blurple()
     )
-    embed.set_footer(text="SCRIM Bot • Made for competitive scrim management")
+    embed.set_footer(text="SCRIM Bot • Competitive scrim management")
     await ctx.send(embed=embed)
 
 
 # ─── Command: r!cmd ──────────────────────────────────────────────────────────
-# Lists all commands with a short description.
-# Usage: r!cmd
 
 @bot.command()
 async def cmd(ctx):
-    embed = discord.Embed(
-        title="[SCRIM] Bot — Commands",
-        color=discord.Color.blurple()
-    )
+    embed = discord.Embed(title="🤖 SCRIM Bot — Commands", color=discord.Color.blurple())
 
-    embed.add_field(name="📅 Event Management", value=(
-        "`r!create` — Create an event & registration post\n"
-        "`r!cancel event, ID` — Cancel a scheduled event\n"
-        "`r!delete event` — End scrim & full cleanup"
+    embed.add_field(name="⚙️ Setup", value=(
+        "`r!setup` — Configure bot for this server *(Admin only)*\n"
+        "`r!setupshow` — Show current server configuration\n"
+        "`r!setupreset` — Reset server configuration"
     ), inline=False)
 
-    embed.add_field(name="🔊 Voice Channel", value=(
-        "`r!join` — Bot joins Meeting Point VC\n"
-        "`r!leave` — Bot leaves voice channel"
+    embed.add_field(name="📅 Regular Scrim", value=(
+        "`r!create Title, Desc, <t:TS:R>` — Create event & registration post\n"
+        "`r!cancel event, ID` — Cancel a scheduled event\n"
+        "`r!delete event` — End scrim & full cleanup\n"
+        "`r!join` / `r!leave` — Bot joins/leaves Meeting Point VC"
     ), inline=False)
 
     embed.add_field(name="🎮 Scrim Session", value=(
-        "`r!event update` — Assign roles, start auto-check\n"
+        "`r!event update` — Assign Active/Spectator roles\n"
         "`r!event leaderboard` — Post updated leaderboard\n"
-        "`r!stopupdate` — Stop auto-check & remove scrim roles"
+        "`r!stopupdate` — Stop auto-check & remove roles"
     ), inline=False)
 
     embed.add_field(name="🏆 Game Tracking", value=(
-        "`r!game winner @A @B` — Log a game result manually\n"
-        "`r!winner @A @B` — Add wins manually (mentions or IDs)\n"
-        "`r!removewins @Player [amount]` — Remove wins from a player"
+        "`r!game winner @A @B` — Log a game result\n"
+        "`r!winner @A` — Add wins manually\n"
+        "`r!removewins @Player [amount]` — Remove wins"
     ), inline=False)
 
-    embed.add_field(name="📊 Stats", value=(
-        "`r!stats` — Your own stats\n"
-        "`r!stats @Player` — Another player's stats\n"
-        "`r!stats top` — Top 10 by attendance rate"
+    embed.add_field(name="🎟️ Tournament Scrim", value=(
+        "`r!tournament create SIZE, TEAMS, SUBS, Title, Desc, <t:TS:R>`\n"
+        "`r!tournament list` — Show all registered teams\n"
+        "`r!tournament close` — Close registrations\n"
+        "`r!tournament start` — Create private team voice channels\n"
+        "`r!tournament delete` — End tournament & full cleanup"
     ), inline=False)
 
-    embed.add_field(name="ℹ️ General", value=(
-        "`r!info` — About this bot\n"
-        "`r!cmd` — This command list"
+    embed.add_field(name="📊 Stats & Season", value=(
+        "`r!stats` / `r!stats @Player` / `r!stats top`\n"
+        "`r!season reset Q2 2026` — Save quarter & reset\n"
+        "`r!season show` — All-time leaderboard"
     ), inline=False)
 
-    embed.add_field(name="🔄 Workflow", value=(
+    embed.add_field(name="🔄 Regular Scrim Workflow", value=(
         "`r!create` → `r!join` → `r!event update` → log games → `r!event leaderboard` → `r!delete event`"
     ), inline=False)
 
-    embed.set_footer(text="Staff & Host only • except r!stats, r!info, r!cmd")
+    embed.add_field(name="🎟️ Tournament Workflow", value=(
+        "`r!tournament create` → players register via button → staff accepts → `r!tournament start` → `r!tournament delete`"
+    ), inline=False)
+
+    embed.set_footer(text="Staff & Host only • except r!stats, r!info, r!cmd, r!setup")
     await ctx.send(embed=embed)
 
 
@@ -2503,55 +2511,56 @@ async def slash_info(interaction: discord.Interaction):
 
 @bot.tree.command(name="cmd", description="Show all available commands")
 async def slash_cmd(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="[SCRIM] Bot — Commands",
-        color=discord.Color.blurple()
-    )
+    embed = discord.Embed(title="🤖 SCRIM Bot — Commands", color=discord.Color.blurple())
 
     embed.add_field(name="⚙️ Setup", value=(
-        "`/setup` — Start the setup wizard (Admin only)\n"
-        "`/setupshow` — Show server configuration\n"
+        "`/setup` — Configure bot for this server *(Admin only)*\n"
+        "`/setupshow` — Show current server configuration\n"
         "`/setupreset` — Reset server configuration"
     ), inline=False)
 
-    embed.add_field(name="📅 Event Management", value=(
-        "`/create` — Create an event & registration post\n"
+    embed.add_field(name="📅 Regular Scrim", value=(
+        "`/create` — Create event & registration post\n"
         "`/cancel_event` — Cancel a scheduled event\n"
-        "`/delete_event` — End scrim & full cleanup"
-    ), inline=False)
-
-    embed.add_field(name="🔊 Voice Channel", value=(
-        "`/join` — Bot joins Meeting Point VC\n"
-        "`/leave` — Bot leaves voice channel"
+        "`/delete_event` — End scrim & full cleanup\n"
+        "`/join` / `/leave` — Bot joins/leaves Meeting Point VC"
     ), inline=False)
 
     embed.add_field(name="🎮 Scrim Session", value=(
-        "`/event_update` — Assign roles, start auto-check\n"
+        "`/event_update` — Assign Active/Spectator roles\n"
         "`/event_leaderboard` — Post updated leaderboard\n"
-        "`/stopupdate` — Stop auto-check & remove scrim roles"
+        "`/stopupdate` — Stop auto-check & remove roles"
     ), inline=False)
 
     embed.add_field(name="🏆 Game Tracking", value=(
-        "`/game_winner` — Log a game result manually\n"
-        "`/winner` — Add wins manually (mentions or IDs)\n"
+        "`/game_winner` — Log a game result\n"
+        "`/winner` — Add wins manually\n"
         "`/removewins` — Remove wins from a player"
     ), inline=False)
 
-    embed.add_field(name="📊 Stats", value=(
-        "`/stats` — Your own or another player's stats\n"
-        "`/stats_top` — Top 10 by attendance rate"
+    embed.add_field(name="🎟️ Tournament Scrim", value=(
+        "`/tournament_create` — Create team scrim with ticket registration\n"
+        "`/tournament_list` — Show all registered teams\n"
+        "`/tournament_close` — Close registrations\n"
+        "`/tournament_start` — Create private team voice channels\n"
+        "`/tournament_delete` — End tournament & full cleanup"
     ), inline=False)
 
-    embed.add_field(name="ℹ️ General", value=(
-        "`/info` — About this bot\n"
-        "`/cmd` — This command list"
+    embed.add_field(name="📊 Stats & Season", value=(
+        "`/stats` / `/stats_top` — Player stats\n"
+        "`/season_reset` — Save quarter to all-time & reset\n"
+        "`/season_show` — All-time leaderboard"
     ), inline=False)
 
-    embed.add_field(name="🔄 Workflow", value=(
+    embed.add_field(name="🔄 Regular Scrim Workflow", value=(
         "`/create` → `/join` → `/event_update` → log games → `/event_leaderboard` → `/delete_event`"
     ), inline=False)
 
-    embed.set_footer(text="Staff & Host only • except /stats, /info, /cmd")
+    embed.add_field(name="🎟️ Tournament Workflow", value=(
+        "`/tournament_create` → players register via button → staff accepts → `/tournament_start` → `/tournament_delete`"
+    ), inline=False)
+
+    embed.set_footer(text="Staff & Host only • except /stats, /info, /cmd, /setup")
     await interaction.response.send_message(embed=embed)
 
 
@@ -3241,22 +3250,45 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         accepted = [t for t in teams if t["status"] == "accepted"]
         pending  = [t for t in teams if t["status"] == "pending"]
         rejected = [t for t in teams if t["status"] == "rejected"]
-        embed    = discord.Embed(title=f"🏆 Tournament — {t_data['format'].upper()}", color=discord.Color.gold())
-        embed.add_field(
-            name=f"✅ Accepted ({len(accepted)}/{t_data['max_teams']})",
-            value="\n".join(
-                f"**{t['tag']} {t['name']}** — " + ", ".join(f"{p['name']} <@{p['discord_id']}>" for p in t["players"])
-                for t in accepted
-            ) or "None yet",
-            inline=False
+
+        embed = discord.Embed(
+            title=f"🏆 Tournament — {t_data['format'].upper()} | {t_data.get('title', '')}",
+            color=discord.Color.gold()
         )
+
+        # Accepted teams
+        if accepted:
+            acc_lines = []
+            for t in accepted:
+                starters = ", ".join(f"**{p['name']}**" for p in t["players"])
+                line     = f"**{t['tag']} {t['name']}** — {starters}"
+                subs     = t.get("substitutes_list", [])
+                if subs:
+                    sub_names = ", ".join(f"**{p['name']}**" for p in subs)
+                    line += f"\n*Subs: {sub_names}*"
+                acc_lines.append(line)
+            embed.add_field(
+                name=f"✅ Accepted ({len(accepted)}/{t_data['max_teams']})",
+                value="\n\n".join(acc_lines),
+                inline=False
+            )
+        else:
+            embed.add_field(name=f"✅ Accepted (0/{t_data['max_teams']})", value="None yet", inline=False)
+
         if pending:
-            embed.add_field(name=f"⏳ Pending ({len(pending)})",
-                value="\n".join(f"**{t['tag']} {t['name']}**" for t in pending), inline=False)
+            embed.add_field(
+                name=f"⏳ Pending ({len(pending)})",
+                value="\n".join(f"**{t['tag']} {t['name']}**" for t in pending),
+                inline=False
+            )
         if rejected:
-            embed.add_field(name=f"❌ Rejected ({len(rejected)})",
-                value="\n".join(f"**{t['tag']} {t['name']}**" for t in rejected), inline=False)
-        embed.set_footer(text="🔒 Closed" if t_data.get("closed") else "🟢 Open")
+            embed.add_field(
+                name=f"❌ Rejected ({len(rejected)})",
+                value="\n".join(f"**{t['tag']} {t['name']}**" for t in rejected),
+                inline=False
+            )
+
+        embed.set_footer(text="🔒 Closed" if t_data.get("closed") else "🟢 Open for registration")
         await ctx.send(embed=embed)
 
     # ── CLOSE ─────────────────────────────────────────────────────────────────
@@ -3316,13 +3348,13 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             )
             team["channel_id"] = ch.id
 
-            # Notify players via the review channel since voice channels have no chat
-            review_ch = guild.get_channel(t_data.get("review_channel_id"))
-            if review_ch:
-                mentions = " ".join(f"<@{p['discord_id']}>" for p in team["players"])
-                await review_ch.send(
+            # Notify players in their ticket channel (only they can see it)
+            ticket_ch = guild.get_channel(team.get("ticket_channel_id"))
+            if ticket_ch:
+                mentions = " ".join(f"<@{p['discord_id']}>" for p in team["players"] + team.get("substitutes_list", []))
+                await ticket_ch.send(
                     f"🔊 {mentions}\n"
-                    f"Your team **{team['tag']} {team['name']}** has a private voice channel: {ch.mention}\n"
+                    f"Your team **{team['tag']} {team['name']}** has been assigned a private voice channel: {ch.mention}\n"
                     f"Good luck in the **{t_data['format']}** scrim! 🏆"
                 )
 
@@ -3377,7 +3409,7 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         await ctx.send("⏳ Cleaning up tournament...")
         deleted = 0
 
-        # End/delete the Discord scheduled event
+        # End/delete the Discord scheduled event (active, future, or any status)
         event_id = t_data.get("event_id")
         if event_id:
             try:
@@ -3386,14 +3418,27 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                     if ev.id == event_id:
                         if ev.status == discord.EventStatus.active:
                             await ev.end()
-                        else:
+                        elif ev.status in (discord.EventStatus.scheduled, discord.EventStatus.completed):
                             await ev.cancel()
-                        print(f"Tournament event deleted: {ev.name}")
+                        print(f"Tournament event cancelled: {ev.name}")
                         break
             except Exception as e:
-                print(f"Could not delete tournament event: {e}")
+                print(f"Could not cancel tournament event: {e}")
 
-        # Delete team channels
+        # Close any open ticket conversations and notify players
+        to_remove = [cid for cid, s in active_tickets.items() if s.get("guild_id") == guild.id]
+        for cid in to_remove:
+            ch = guild.get_channel(cid)
+            if ch:
+                try:
+                    await ch.send("❌ The tournament has been cancelled. This ticket will be deleted in 10 seconds.")
+                    await asyncio.sleep(10)
+                    await ch.delete()
+                except Exception:
+                    pass
+            del active_tickets[cid]
+
+        # Delete team voice channels
         for team in t_data.get("teams", []):
             if team.get("channel_id"):
                 ch = guild.get_channel(team["channel_id"])
@@ -3403,11 +3448,13 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                         deleted += 1
                     except Exception as e:
                         print(f"Error deleting team channel: {e}")
-            # Delete ticket channels
+            # Delete ticket channels that weren't already deleted above
             if team.get("ticket_channel_id"):
                 ch = guild.get_channel(team["ticket_channel_id"])
                 if ch:
                     try:
+                        await ch.send("❌ The tournament has been cancelled.")
+                        await asyncio.sleep(2)
                         await ch.delete()
                     except Exception:
                         pass
@@ -3442,11 +3489,11 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                 except Exception:
                     pass
 
-        # Delete register message and all other bot messages in register channel
+        # Delete ALL bot messages in register channel (registration post, closed messages, start announcements)
         reg_ch = bot.get_channel(get_cfg(guild.id, "channel_id"))
         if reg_ch:
             try:
-                async for msg in reg_ch.history(limit=100):
+                async for msg in reg_ch.history(limit=200):
                     if msg.author == bot.user:
                         try:
                             await msg.delete()
@@ -3455,17 +3502,13 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             except Exception as e:
                 print(f"Error cleaning register channel: {e}")
 
-        # Clean up active tickets for this guild
-        to_remove = [cid for cid, s in active_tickets.items() if s.get("guild_id") == guild.id]
-        for cid in to_remove:
-            del active_tickets[cid]
-
-        # Remove Scrim Player role from all accepted tournament players
+        # Remove Scrim Player role from all accepted tournament players including subs
         scrim_role = guild.get_role(get_cfg(guild.id, "role_id"))
         if scrim_role and t_data.get("teams"):
             for team in t_data["teams"]:
                 if team.get("status") == "accepted":
-                    for player in team.get("players", []):
+                    all_players = team.get("players", []) + team.get("substitutes_list", [])
+                    for player in all_players:
                         member = guild.get_member(int(player["discord_id"]))
                         if member and scrim_role in member.roles:
                             try:
