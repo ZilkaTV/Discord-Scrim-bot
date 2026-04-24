@@ -2805,6 +2805,7 @@ class TournamentRegisterView(discord.ui.View):
             "step":     1,
             "data":     {}
         }
+        save_active_tickets()
 
         # Send first question
         team_size = t_data["team_size"]
@@ -2973,7 +2974,7 @@ async def handle_ticket_message(message: discord.Message):
     content     = message.content.strip()
 
     if content.lower() == "cancel":
-        del active_tickets[message.channel.id]
+        remove_active_ticket(message.channel.id)
         await message.channel.send("\u274c Registration cancelled. This channel will be deleted in 10 seconds.")
         await asyncio.sleep(10)
         try:
@@ -2998,6 +2999,7 @@ async def handle_ticket_message(message: discord.Message):
         state["data"]["team_name"] = name
         state["data"]["team_tag"]  = tag
         state["step"] = 2
+        save_active_tickets()
         embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Step 2 / 6", color=discord.Color.blurple())
         embed.add_field(name="\u2705 Team", value=f"**{tag} {name}**", inline=False)
         embed.add_field(name="\U0001f464 Captain", value=f"Enter the **in-game name** of your captain.\nThe captain is the main contact person for your team.\n\nExample: `Biffeur`", inline=False)
@@ -3011,6 +3013,7 @@ async def handle_ticket_message(message: discord.Message):
             return
         state["data"]["captain_name"] = content
         state["step"] = 3
+        save_active_tickets()
         embed = discord.Embed(title="\U0001f39f\ufe0f Team Registration \u2014 Step 3 / 6", color=discord.Color.blurple())
         embed.add_field(name="\u2705 Captain", value=f"**{content}**", inline=False)
         embed.add_field(name="\U0001f194 Captain Discord User ID", value="Enter the **Discord User ID** of the captain.\n\nRight-click the user \u2192 **Copy User ID**\n*(Developer Mode must be on in Discord Settings)*\n\nExample: `123456789012345678`", inline=False)
@@ -3024,6 +3027,7 @@ async def handle_ticket_message(message: discord.Message):
             return
         state["data"]["captain_id"] = content
         state["step"] = 4
+        save_active_tickets()
         remaining = team_size - 1  # captain fills one slot
         embed = discord.Embed(title="🎟️ Team Registration — Step 4 / 6", color=discord.Color.blurple())
         embed.add_field(name="✅ Captain", value=f"<@{content}>", inline=False)
@@ -3057,6 +3061,7 @@ async def handle_ticket_message(message: discord.Message):
                 return
         state["data"]["player_names"] = names
         state["step"] = 5
+        save_active_tickets()
 
         if remaining > 0:
             embed = discord.Embed(title="🎟️ Team Registration — Step 5 / 6", color=discord.Color.blurple())
@@ -3073,11 +3078,13 @@ async def handle_ticket_message(message: discord.Message):
             state["data"]["player_ids"] = []
             if substitutes > 0:
                 state["step"] = 6
+                save_active_tickets()
                 embed = discord.Embed(title="🎟️ Team Registration — Step 6 / 6", color=discord.Color.blurple())
                 embed.add_field(name=f"🔄 Substitutes ({substitutes})", value=f"Enter **{substitutes}** substitute(s).\nFormat: `Name: USER_ID`, one per line.\n\nExample:\n```\nSubOne: 112233445566778899\n```", inline=False)
                 embed.set_footer(text="After this: coaches (optional) | Type cancel to abort")
             else:
                 state["step"] = 7
+                save_active_tickets()
                 embed = discord.Embed(title="🎟️ Team Registration — Coaches (Optional)", color=discord.Color.blurple())
                 embed.add_field(name="🧑‍🏫 Coaches (max 3)", value="Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if you have no coaches.\n\nExample:\n```\nCoachMike: 123456789012345678\n```", inline=False)
                 embed.set_footer(text="Coaches get Spectator role + access to game-links & scrim-chat")
@@ -3099,12 +3106,14 @@ async def handle_ticket_message(message: discord.Message):
         state["data"]["player_ids"] = ids
         if substitutes > 0:
             state["step"] = 6
+            save_active_tickets()
             embed = discord.Embed(title="🎟️ Team Registration — Step 6 / 6", color=discord.Color.blurple())
             embed.add_field(name=f"🔄 Substitutes ({substitutes})", value=f"Enter **{substitutes}** substitute(s).\nFormat: `Name: USER_ID`, one per line.\n\nExample:\n```\nSubOne: 112233445566778899\n```", inline=False)
             embed.set_footer(text="After this: coaches (optional) | Type cancel to abort")
             await message.channel.send(embed=embed)
         else:
             state["step"] = 7
+            save_active_tickets()
             embed = discord.Embed(title="🎟️ Team Registration — Coaches (Optional)", color=discord.Color.blurple())
             embed.add_field(name="🧑‍🏫 Coaches (max 3)", value="Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if you have no coaches.\n\nExample:\n```\nCoachMike: 123456789012345678\n```", inline=False)
             embed.set_footer(text="Coaches get Spectator role + access to game-links & scrim-chat")
@@ -3138,6 +3147,7 @@ async def handle_ticket_message(message: discord.Message):
             return
         state["data"]["subs"] = subs
         state["step"] = 7
+        save_active_tickets()
         embed = discord.Embed(title="🎟️ Team Registration — Coaches (Optional)", color=discord.Color.blurple())
         embed.add_field(name="🧑‍🏫 Coaches (max 3)", value="Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if you have no coaches.\n\nExample:\n```\nCoachMike: 123456789012345678\n```", inline=False)
         embed.set_footer(text="Coaches get Spectator role + access to game-links & scrim-chat")
@@ -3582,7 +3592,9 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                     await ch.delete()
                 except Exception:
                     pass
-            del active_tickets[cid]
+            if cid in active_tickets:
+                del active_tickets[cid]
+        save_active_tickets()
 
         # Delete team voice channels
         for team in t_data.get("teams", []):
