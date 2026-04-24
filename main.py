@@ -2696,16 +2696,20 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
     else:
         lines = []
         for i, team in enumerate(accepted):
-            line = f"**{i+1}. {team['tag']} {team['name']}**"
-            coaches = team.get("coaches", [])
+            coaches  = team.get("coaches", [])
+            subs     = team.get("substitutes_list", [])
+            cap_id   = team.get("captain_id", "")
+            starters = [p for p in team["players"] if p["discord_id"] != cap_id]
+
+            line = f"**{i+1}. {team['tag']} {team['name']}**\n"
             if coaches:
-                line += "\n🧑‍🏫 " + " · ".join(f"**{c['name']}**" for c in coaches)
-            line += f"\n👤 **{team.get('captain_name', '?')}** (Captain)"
-            line += "\n🎮 " + " · ".join(f"**{p['name']}**" for p in team["players"])
-            subs = team.get("substitutes_list", [])
+                line += "🧑‍🏫 Coach: " + " / ".join(f"**{c['name']}**" for c in coaches) + "\n"
+            line += f"👤 Captain: **{team.get('captain_name', '?')}**\n"
+            if starters:
+                line += "🎮 Starter: " + " / ".join(f"**{p['name']}**" for p in starters) + "\n"
             if subs:
-                line += "\n🔄 " + " · ".join(f"**{p['name']}**" for p in subs)
-            lines.append(line)
+                line += "🔄 Substitute: " + " / ".join(f"**{p['name']}**" for p in subs)
+            lines.append(line.strip())
         roster_embed = discord.Embed(
             title=f"🏆 {t_data.get('title', 'Team Scrim')} — Registered Teams",
             description="\n\n".join(lines),
@@ -2875,7 +2879,34 @@ class TeamApprovalView(discord.ui.View):
         # Give Scrim Player role to accepted team members immediately
         await give_scrim_role_to_team(interaction.guild, team, self.guild_id)
 
-        # Give coaches Spectator role + access to game-links (view) and scrim-chat (send+view)
+        # Give all team members (starters, subs, coaches) access to the ticket channel
+        ticket_ch = interaction.guild.get_channel(team.get("ticket_channel_id"))
+        if ticket_ch:
+            all_team_members = (
+                [p["discord_id"] for p in team.get("players", [])] +
+                [p["discord_id"] for p in team.get("substitutes_list", [])] +
+                [p["discord_id"] for p in team.get("coaches", [])]
+            )
+            for uid in all_team_members:
+                member = interaction.guild.get_member(int(uid))
+                if member:
+                    try:
+                        await ticket_ch.set_permissions(
+                            member,
+                            view_channel=True,
+                            send_messages=True,
+                            read_message_history=True
+                        )
+                    except Exception as e:
+                        print(f"Could not give ticket access to {uid}: {e}")
+
+            # Notify the team in their ticket channel (now everyone can see it)
+            player_pings = " ".join(f"<@{uid}>" for uid in all_team_members)
+            await ticket_ch.send(
+                f"🎉 {player_pings}\n"
+                f"Your team **{team['tag']} {team['name']}** has been **accepted**! "
+                f"You're in the scrim. Good luck! 🏆"
+            )
         spectator_role   = interaction.guild.get_role(get_cfg(self.guild_id, "spectator_role_id"))
         game_links_ch    = interaction.guild.get_channel(get_cfg(self.guild_id, "game_links_id"))
         scrim_chat_ch    = interaction.guild.get_channel(get_cfg(self.guild_id, "scrim_chat_id"))
@@ -2899,21 +2930,12 @@ class TeamApprovalView(discord.ui.View):
                 except Exception as e:
                     print(f"Could not set scrim-chat perms for coach: {e}")
 
-        # Notify the team in their ticket channel
-        ticket_ch_id = team.get("ticket_channel_id")
-        if ticket_ch_id:
-            ticket_ch = interaction.guild.get_channel(ticket_ch_id)
-            if ticket_ch:
-                await ticket_ch.send(
-                    f"🎉 {player_mentions}\n"
-                    f"Your team **{team['tag']} {team['name']}** has been **accepted**! "
-                    f"You're in the scrim. Good luck! 🏆"
-                )
-
         # Auto-close if full
         if slots_left <= 0:
             t_data["closed"] = True
             save_tournament(self.guild_id, t_data)
+            # Update registration embed to show closed status
+            await update_tournament_embeds(interaction.guild, t_data)
             register_channel = bot.get_channel(get_cfg(self.guild_id, "channel_id"))
             if register_channel:
                 await register_channel.send(
@@ -3496,6 +3518,10 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         t_data["closed"] = True
         save_tournament(guild.id, t_data)
         accepted = [t for t in t_data.get("teams", []) if t["status"] == "accepted"]
+
+        # Update the registration embed (slots + status)
+        await update_tournament_embeds(guild, t_data)
+
         register_channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
         if register_channel:
             await register_channel.send(
