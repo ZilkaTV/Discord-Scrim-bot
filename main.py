@@ -2671,7 +2671,12 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
         lines = []
         for i, team in enumerate(accepted):
             player_list = " · ".join(f"**{p['name']}** <@{p['discord_id']}>" for p in team["players"])
-            lines.append(f"**{i+1}. {team['tag']} {team['name']}**\n{player_list}")
+            line = f"**{i+1}. {team['tag']} {team['name']}**\n{player_list}"
+            subs = team.get("substitutes_list", [])
+            if subs:
+                sub_list = " · ".join(f"**{p['name']}** <@{p['discord_id']}>" for p in subs)
+                line += f"\n*Subs: {sub_list}*"
+            lines.append(line)
         roster_embed = discord.Embed(
             title=f"🏆 {t_data.get('title', 'Team Scrim')} — Registered Teams",
             description="\n\n".join(lines),
@@ -2696,11 +2701,12 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
 
 
 async def give_scrim_role_to_team(guild: discord.Guild, team: dict, guild_id: int):
-    """Give the Scrim Player role to all accepted team members."""
+    """Give the Scrim Player role to all accepted team members including substitutes."""
     scrim_role = guild.get_role(get_cfg(guild_id, "role_id"))
     if not scrim_role:
         return
-    for player in team.get("players", []):
+    all_players = team.get("players", []) + team.get("substitutes_list", [])
+    for player in all_players:
         member = guild.get_member(int(player["discord_id"]))
         if member and scrim_role not in member.roles:
             try:
@@ -2908,10 +2914,12 @@ async def handle_ticket_message(message: discord.Message):
     if not state or message.author.id != state["user_id"]:
         return
 
-    guild_id  = state["guild_id"]
-    t_data    = load_tournament(guild_id)
-    team_size = t_data.get("team_size", 1) if t_data else 1
-    content   = message.content.strip()
+    guild_id    = state["guild_id"]
+    t_data      = load_tournament(guild_id)
+    team_size   = t_data.get("team_size", 1) if t_data else 1
+    substitutes = t_data.get("substitutes", 0) if t_data else 0
+    total_slots = team_size + substitutes  # total people to collect (starters + subs)
+    content     = message.content.strip()
 
     if content.lower() == "cancel":
         del active_tickets[message.channel.id]
@@ -2928,7 +2936,6 @@ async def handle_ticket_message(message: discord.Message):
     # ── Step 1: Team Name & Tag ────────────────────────────────────────────────
     if step == 1:
         state["data"]["raw_name_tag"] = content
-        # Try to parse tag from format "Name [TAG]" or "Name TAG"
         import re
         tag_match = re.search(r'\[(.+?)\]', content)
         if tag_match:
@@ -2943,12 +2950,14 @@ async def handle_ticket_message(message: discord.Message):
         state["data"]["team_tag"]  = tag
         state["step"] = 2
 
+        sub_hint = f" + {substitutes} substitute(s)" if substitutes > 0 else ""
         embed = discord.Embed(
             title="🎟️ Team Registration — Step 2 of 3",
             description=(
                 f"✅ Team: **{tag} {name}**\n\n"
-                f"Now please enter the **in-game names** of all {team_size} player(s), one per line.\n\n"
-                f"Example:\n`PlayerOne\nPlayerTwo\nPlayerThree`"
+                f"Now please enter the **in-game names** of all **{team_size} starter(s){sub_hint}**, one per line.\n"
+                + (f"*(Enter starters first, then substitutes)*\n" if substitutes > 0 else "") +
+                f"\nExample:\n`PlayerOne\nPlayerTwo" + ("\nSubOne" if substitutes > 0 else "") + "`"
             ),
             color=discord.Color.blurple()
         )
@@ -2957,23 +2966,26 @@ async def handle_ticket_message(message: discord.Message):
     # ── Step 2: Player names ───────────────────────────────────────────────────
     elif step == 2:
         names = [n.strip() for n in content.split("\n") if n.strip()]
-        if len(names) != team_size:
+        if len(names) != total_slots:
+            sub_note = f" ({team_size} starters + {substitutes} substitute(s))" if substitutes > 0 else ""
             await message.channel.send(
-                f"❌ Please enter exactly **{team_size}** player name(s), one per line. You entered {len(names)}."
+                f"❌ Please enter exactly **{total_slots}** name(s){sub_note}, one per line. You entered {len(names)}."
             )
             return
 
         state["data"]["player_names"] = names
         state["step"] = 3
 
+        sub_note = f"\n*(First {team_size} = starters, last {substitutes} = substitutes)*" if substitutes > 0 else ""
         embed = discord.Embed(
             title="🎟️ Team Registration — Step 3 of 3",
             description=(
-                f"✅ Players: {', '.join(names)}\n\n"
+                f"✅ Players: {', '.join(names)}{sub_note}\n\n"
                 f"Now please enter the **Discord User ID** of each player, one per line "
-                f"(in the same order as the names above).\n\n"
+                f"(same order as names above).\n\n"
                 f"To get a User ID: Right-click a user → **Copy User ID** *(Developer Mode must be on)*\n\n"
-                f"Example:\n`123456789012345678\n987654321098765432\n112233445566778899`"
+                f"Example:\n`123456789012345678\n987654321098765432"
+                + ("\n112233445566778899" if substitutes > 0 else "") + "`"
             ),
             color=discord.Color.blurple()
         )
@@ -2984,9 +2996,10 @@ async def handle_ticket_message(message: discord.Message):
         raw_ids = [i.strip() for i in content.replace(",", "\n").split("\n") if i.strip()]
         ids     = [i for i in raw_ids if i.isdigit()]
 
-        if len(ids) != team_size:
+        if len(ids) != total_slots:
+            sub_note = f" ({team_size} starters + {substitutes} sub(s))" if substitutes > 0 else ""
             await message.channel.send(
-                f"❌ Please enter exactly **{team_size}** Discord User ID(s), one per line. "
+                f"❌ Please enter exactly **{total_slots}** Discord User ID(s){sub_note}, one per line. "
                 f"You entered {len(ids)} valid ID(s)."
             )
             return
@@ -2998,71 +3011,74 @@ async def handle_ticket_message(message: discord.Message):
         for t in t_data.get("teams", []):
             if t.get("status") == "accepted":
                 existing_ids.extend([p["discord_id"] for p in t.get("players", [])])
-        duplicates = [pid for pid in ids if pid in existing_ids]
-        if duplicates:
-            await message.channel.send(
-                f"❌ One or more players are already registered in an accepted team."
-            )
+                existing_ids.extend([p["discord_id"] for p in t.get("substitutes_list", [])])
+        if any(pid in existing_ids for pid in ids):
+            await message.channel.send("❌ One or more players are already registered in an accepted team.")
             return
 
-        # Build team entry
+        # Split into starters and substitutes
+        starters   = [{"name": names[i], "discord_id": ids[i]} for i in range(team_size)]
+        subs_list  = [{"name": names[team_size + i], "discord_id": ids[team_size + i]} for i in range(substitutes)]
+
         team_id = f"team_{len(t_data.get('teams', []))}"
-        players = [{"name": names[i], "discord_id": ids[i]} for i in range(team_size)]
         team    = {
-            "team_id":          team_id,
-            "name":             state["data"]["team_name"],
-            "tag":              state["data"]["team_tag"],
-            "players":          players,
-            "status":           "pending",
-            "submitter":        str(state["user_id"]),
+            "team_id":           team_id,
+            "name":              state["data"]["team_name"],
+            "tag":               state["data"]["team_tag"],
+            "players":           starters,
+            "substitutes_list":  subs_list,
+            "status":            "pending",
+            "submitter":         str(state["user_id"]),
             "ticket_channel_id": message.channel.id,
-            "channel_id":       None
+            "channel_id":        None
         }
         t_data.setdefault("teams", []).append(team)
         save_tournament(guild_id, t_data)
 
         # Summary embed in ticket
-        player_lines = "\n".join(f"• **{p['name']}** — <@{p['discord_id']}>" for p in players)
+        starter_lines = "\n".join(f"• **{p['name']}** — <@{p['discord_id']}>" for p in starters)
+        sub_lines     = "\n".join(f"• **{p['name']}** — <@{p['discord_id']}>" for p in subs_list)
+        summary_desc  = f"**Team:** {team['tag']} {team['name']}\n\n**Starters:**\n{starter_lines}"
+        if subs_list:
+            summary_desc += f"\n\n**Substitutes:**\n{sub_lines}"
+        summary_desc += "\n\nYour registration has been submitted! A host will review it shortly."
+
         summary = discord.Embed(
             title="📋 Registration Summary",
-            description=(
-                f"**Team:** {team['tag']} {team['name']}\n\n"
-                f"**Players:**\n{player_lines}\n\n"
-                f"Your registration has been submitted! A host will review it shortly."
-            ),
+            description=summary_desc,
             color=discord.Color.green()
         )
         await message.channel.send(embed=summary)
 
-        # Find the staff review channel (ticket category channel or scrim chat)
+        # Post to staff review channel
         guild        = message.guild
         review_ch_id = t_data.get("review_channel_id")
-        review_ch    = guild.get_channel(review_ch_id) if review_ch_id else None
-
-        if not review_ch:
-            # Fallback: post in scrim chat
-            review_ch = bot.get_channel(get_cfg(guild_id, "scrim_chat_id"))
+        review_ch    = guild.get_channel(review_ch_id) if review_ch_id else bot.get_channel(get_cfg(guild_id, "scrim_chat_id"))
 
         if review_ch:
-            player_mentions = " ".join(f"<@{p['discord_id']}>" for p in players)
             review_embed = discord.Embed(
                 title=f"📋 New Team — {team['tag']} {team['name']}",
                 color=discord.Color.orange()
             )
-            review_embed.add_field(name="Team Name",  value=team["name"],  inline=True)
-            review_embed.add_field(name="Tag",        value=team["tag"],   inline=True)
+            review_embed.add_field(name="Team Name", value=team["name"], inline=True)
+            review_embed.add_field(name="Tag",       value=team["tag"],  inline=True)
             review_embed.add_field(
-                name=f"Players ({team_size})",
-                value="\n".join(f"**{p['name']}** — <@{p['discord_id']}>" for p in players),
+                name=f"Starters ({team_size})",
+                value="\n".join(f"**{p['name']}** — <@{p['discord_id']}>" for p in starters),
                 inline=False
             )
+            if subs_list:
+                review_embed.add_field(
+                    name=f"Substitutes ({substitutes})",
+                    value="\n".join(f"**{p['name']}** — <@{p['discord_id']}>" for p in subs_list),
+                    inline=False
+                )
             review_embed.add_field(name="Submitted by", value=f"<@{state['user_id']}>", inline=False)
             review_embed.set_footer(text=f"Team ID: {team_id}")
 
             view = TeamApprovalView(guild_id=guild_id, team_id=team_id)
             await review_ch.send(embed=review_embed, view=view)
 
-        # Remove from active tickets (keep channel open for notifications)
         del active_tickets[message.channel.id]
 
 
