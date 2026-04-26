@@ -1632,12 +1632,14 @@ async def event(ctx, *, args):
         def build_lb_description(entries, guild):
             medals = {1: "🥇", 2: "🥈", 3: "🥉"}
             lines  = []
+            rank   = 0
+            prev_wins = None
             for i, (user_id, wins, games) in enumerate(entries):
-                pos    = i + 1
-                member = guild.get_member(int(user_id))
-                name   = member.display_name if member else f"<@{user_id}>"
-                prefix = medals.get(pos, f"**#{pos}**")
-                lines.append(f"{prefix} **{name}** — {wins} pt{'s' if wins != 1 else ''}")
+                if wins != prev_wins:
+                    rank = i + 1
+                    prev_wins = wins
+                prefix = medals.get(rank, f"**#{rank}**")
+                lines.append(f"{prefix} <@{user_id}> — {wins} pt{'s' if wins != 1 else ''}")
             return "\n".join(lines) if lines else "No data yet."
 
         # ── Quarter embed ──────────────────────────────────────────────────────
@@ -1647,7 +1649,18 @@ async def event(ctx, *, args):
             games       = max(user_stats.get("games_played", 0), wins)  # at minimum played as many as won
             quarter_entries.append((uid, wins, games))
         quarter_entries.sort(key=lambda x: x[1], reverse=True)
-        quarter_entries = quarter_entries[:25]
+        quarter_entries.sort(key=lambda x: x[1], reverse=True)
+        # Include all players sharing a rank that falls within top 25
+        cutoff_wins = None
+        cutoff_idx  = 0
+        rank = 0
+        for i, (uid, wins, games) in enumerate(quarter_entries):
+            if wins != cutoff_wins:
+                rank = i + 1
+                cutoff_wins = wins
+            if rank <= 25:
+                cutoff_idx = i + 1
+        quarter_entries = quarter_entries[:cutoff_idx]
 
         quarter_embed = discord.Embed(
             title="📊 Current Quarter — Leaderboard",
@@ -1663,7 +1676,17 @@ async def event(ctx, *, args):
             if isinstance(sdata, dict):
                 alltime_entries.append((uid, sdata.get("wins", 0), sdata.get("games_played", 0)))
         alltime_entries.sort(key=lambda x: x[1], reverse=True)
-        alltime_entries = alltime_entries[:25]
+        alltime_entries.sort(key=lambda x: x[1], reverse=True)
+        cutoff_wins = None
+        cutoff_idx  = 0
+        rank = 0
+        for i, (uid, wins, games) in enumerate(alltime_entries):
+            if wins != cutoff_wins:
+                rank = i + 1
+                cutoff_wins = wins
+            if rank <= 25:
+                cutoff_idx = i + 1
+        alltime_entries = alltime_entries[:cutoff_idx]
 
         if alltime_entries:
             alltime_desc = build_lb_description(alltime_entries, guild)
@@ -1803,41 +1826,35 @@ async def removewins(ctx, *, args=None):
     if args is None:
         await ctx.send(
             "❌ Please provide a user!\n"
-            "Usage: `r!removewins @Player` or `r!removewins @Player 3`"
+            "Usage: `r!removewins @Player` or `r!removewins USER_ID` or `r!removewins @Player 3`"
         )
         return
 
-    # Parse mentions and/or raw IDs
-    tokens    = args.split()
-    member    = None
-    amount    = 1
+    tokens = args.split()
+    member = None
+    amount = 1
 
     # Check if last token is a number (the amount to remove)
-    if tokens and tokens[-1].isdigit():
+    if tokens and tokens[-1].isdigit() and len(tokens) > 1:
         amount = int(tokens[-1])
         tokens = tokens[:-1]
 
     # Get member from mention or ID
     if ctx.message.mentions:
         member = ctx.message.mentions[0]
+        user_id_str = str(member.id)
     else:
-        for token in tokens:
-            token = token.strip("<@!>")
-            if token.isdigit():
-                try:
-                    member = ctx.guild.get_member(int(token)) or await ctx.guild.fetch_member(int(token))
-                except discord.NotFound:
-                    await ctx.send(f"❌ No user found with ID `{token}`.")
-                    return
-                break
-
-    if member is None:
-        await ctx.send("❌ Could not find the user. Use a mention or User ID.")
-        return
-
-    if member.bot:
-        await ctx.send("❌ Can't remove wins from a bot.")
-        return
+        # Try raw ID
+        raw = tokens[0].strip("<@!>") if tokens else ""
+        if raw.isdigit():
+            user_id_str = raw
+            try:
+                member = ctx.guild.get_member(int(raw)) or await ctx.guild.fetch_member(int(raw))
+            except Exception:
+                member = None  # Not on server — still allow removing from data
+        else:
+            await ctx.send("❌ Could not find the user. Use a mention or User ID.")
+            return
 
     if amount < 1:
         await ctx.send("❌ Amount must be at least 1.")
@@ -1846,33 +1863,32 @@ async def removewins(ctx, *, args=None):
     guild       = ctx.guild
     stats       = load_stats(guild.id)
     leaderboard = load_leaderboard(guild.id)
-    uid_str     = str(member.id)
-    user_stats  = get_or_create_stats(stats, uid_str)
+    user_stats  = get_or_create_stats(stats, user_id_str)
 
-    # Clamp so we don't go below 0
     old_wins           = user_stats["games_won"]
     removed            = min(amount, old_wins)
     user_stats["games_won"] = old_wins - removed
 
-    old_lb             = leaderboard.get(uid_str, 0)
-    leaderboard[uid_str] = max(0, old_lb - removed)
+    old_lb             = leaderboard.get(user_id_str, 0)
+    leaderboard[user_id_str] = max(0, old_lb - removed)
 
-    # Reset win streak if it's now higher than remaining wins (sanity clamp)
     if user_stats["win_streak"] > user_stats["games_won"]:
         user_stats["win_streak"] = user_stats["games_won"]
 
     save_stats(stats, guild.id)
     save_leaderboard(leaderboard, guild.id)
 
+    name = member.display_name if member else f"ID `{user_id_str}`"
     embed = discord.Embed(title="➖ Wins Removed", color=discord.Color.red())
-    embed.add_field(name="Player",       value=member.mention,                   inline=True)
-    embed.add_field(name="Removed",      value=f"-{removed}",                    inline=True)
-    embed.add_field(name="Wins Left",    value=str(user_stats["games_won"]),     inline=True)
-    embed.add_field(name="Leaderboard",  value=str(leaderboard[uid_str]),        inline=True)
-    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="Player",      value=name,                              inline=True)
+    embed.add_field(name="Removed",     value=f"-{removed}",                    inline=True)
+    embed.add_field(name="Wins Left",   value=str(user_stats["games_won"]),     inline=True)
+    embed.add_field(name="Leaderboard", value=str(leaderboard[user_id_str]),    inline=True)
+    if member:
+        embed.set_thumbnail(url=member.display_avatar.url)
     embed.set_footer(text=f"Adjusted by {ctx.author.display_name}")
     await ctx.send(embed=embed)
-    print(f"[r!removewins] Removed {removed} win(s) from {member.display_name} by {ctx.author.display_name}")
+    print(f"[r!removewins] Removed {removed} win(s) from {user_id_str} by {ctx.author.display_name}")
 
 
 
