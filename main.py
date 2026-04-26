@@ -2596,7 +2596,98 @@ async def slash_cmd(interaction: discord.Interaction):
 # TOKEN is read from the environment variable to keep it out of the source code.
 # Set it with: export TOKEN=your_bot_token  (or via your hosting platform's secrets)
 
-# ─── TEMP: r!fixdouble ───────────────────────────────────────────────────────
+# ─── TEMP: r!lbreset & r!lbwins ──────────────────────────────────────────────
+# Manual leaderboard management commands.
+# r!lbreset          — clears the leaderboard completely
+# r!lbwins @Player 3 — sets a player's wins to the given number
+
+@bot.command()
+@has_allowed_role()
+async def lbreset(ctx):
+    """Clears the leaderboard for this server completely."""
+    guild = ctx.guild
+    save_leaderboard({}, guild.id)
+    stats = load_stats(guild.id)
+    for uid in stats:
+        if isinstance(stats[uid], dict):
+            stats[uid]["games_won"]  = 0
+            stats[uid]["win_streak"] = 0
+    save_stats(stats, guild.id)
+    # Also clear counted messages so next scan starts fresh
+    counted_file = guild_file(guild.id, "counted_messages.json")
+    if os.path.exists(counted_file):
+        os.remove(counted_file)
+    await ctx.send("✅ Leaderboard reset to 0 for all players.")
+
+
+@bot.command()
+@has_allowed_role()
+async def lbwins(ctx, user_id: str = None, wins: int = None):
+    """Sets a player's wins manually. Usage: r!lbwins USER_ID WINS"""
+    if not user_id or wins is None:
+        await ctx.send(
+            "❌ Usage: `r!lbwins USER_ID WINS`\n"
+            "Example: `r!lbwins 268855437493796874 3`\n"
+            "Also works with a mention: `r!lbwins @Zilka 3`"
+        )
+        return
+
+    # Accept mention format
+    user_id = user_id.strip("<@!>")
+    if not user_id.isdigit():
+        if ctx.message.mentions:
+            user_id = str(ctx.message.mentions[0].id)
+        else:
+            await ctx.send("❌ Invalid User ID.")
+            return
+
+    if wins < 0:
+        await ctx.send("❌ Wins cannot be negative.")
+        return
+
+    guild  = ctx.guild
+    member = guild.get_member(int(user_id))
+    if not member:
+        try:
+            member = await guild.fetch_member(int(user_id))
+        except Exception:
+            await ctx.send(f"⚠️ User `{user_id}` not found on this server — setting wins anyway.")
+
+    leaderboard = load_leaderboard(guild.id)
+    stats       = load_stats(guild.id)
+    user_stats  = get_or_create_stats(stats, user_id)
+
+    leaderboard[user_id]         = wins
+    user_stats["games_won"]      = wins
+    user_stats["games_played"]   = max(user_stats.get("games_played", 0), wins)
+
+    save_leaderboard(leaderboard, guild.id)
+    save_stats(stats, guild.id)
+
+    name = member.display_name if member else user_id
+    await ctx.send(f"✅ Set **{name}** to **{wins}** win{'s' if wins != 1 else ''}.")
+
+
+@bot.tree.command(name="lbreset", description="Reset the leaderboard to 0 for all players")
+@slash_has_role()
+async def slash_lbreset(interaction: discord.Interaction):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await lbreset(ctx)
+
+
+@bot.tree.command(name="lbwins", description="Manually set a player's wins on the leaderboard")
+@slash_has_role()
+@app_commands.describe(
+    user_id="Discord User ID or mention",
+    wins="Number of wins to set"
+)
+async def slash_lbwins(interaction: discord.Interaction, user_id: str, wins: int):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await lbwins(ctx, user_id=user_id, wins=wins)
+
+
 # Halves all leaderboard points to correct the double-counting bug.
 # Run ONCE, then delete this command.
 
