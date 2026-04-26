@@ -3445,7 +3445,15 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         description = parts[4].strip()
         time_str    = parts[5].strip()
 
-        # Parse format string — supports "3v3v3v3" and "ffa8" / "ffa16"
+        # Parse groups and substitutes first
+        try:
+            groups      = int(groups_str)
+            substitutes = int(sub_str)
+        except ValueError:
+            await ctx.send("❌ GROUPS and SUBSTITUTES must be numbers. Example: `2, 1`")
+            return
+
+        # Parse format string — supports "3v3v3v3" and "ffa8" / "ffa" (with groups as player count)
         import re
         is_ffa = fmt_raw.startswith("ffa")
 
@@ -3488,13 +3496,6 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             teams_per_group = len(team_sizes)
             fmt             = fmt_raw
 
-        try:
-            groups      = int(groups_str)
-            substitutes = int(sub_str)
-        except ValueError:
-            await ctx.send("❌ GROUPS and SUBSTITUTES must be numbers. Example: `2, 1`")
-            return
-
         if team_size < 1 or teams_per_group < 2 or groups < 1 or substitutes < 0:
             await ctx.send("❌ Invalid values. Team size ≥1, format must have at least 2 teams, groups ≥1.")
             return
@@ -3510,7 +3511,6 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
 
         max_teams   = teams_per_group * groups
         max_players = team_size * max_teams
-        fmt         = fmt_raw
 
         # Validate: max_players must be divisible by team_size × teams_per_group
         if max_players % team_size != 0:
