@@ -3796,8 +3796,10 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                 f"Now use `r!event update` to assign Active Scrim roles."
             )
             return
-            members = [guild.get_member(int(p["discord_id"])) for p in team["players"]]
-            members = [m for m in members if m]
+
+        for i, team in enumerate(accepted):
+            members       = [guild.get_member(int(p["discord_id"])) for p in team["players"]]
+            members       = [m for m in members if m]
             sub_members   = [guild.get_member(int(p["discord_id"])) for p in team.get("substitutes_list", []) if guild.get_member(int(p["discord_id"]))]
             coach_members = [guild.get_member(int(p["discord_id"])) for p in team.get("coaches", []) if guild.get_member(int(p["discord_id"]))]
             all_members   = members + sub_members + coach_members
@@ -3809,7 +3811,6 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                 overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
             if is_solo:
-                # Solo format — no private voice channel needed
                 team["channel_id"] = None
                 continue
 
