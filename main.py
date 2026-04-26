@@ -1630,12 +1630,13 @@ async def event(ctx, *, args):
         save_stats(stats, guild.id)
 
         def build_lb_description(entries, guild):
-            medals = ["🥇", "🥈", "🥉"]
-            lines = []
+            medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+            lines  = []
             for i, (user_id, wins, games) in enumerate(entries):
+                pos    = i + 1
                 member = guild.get_member(int(user_id))
                 name   = member.display_name if member else f"<@{user_id}>"
-                prefix = medals[i] if i < 3 else ("🏅" if wins >= 3 else "▪️")
+                prefix = medals.get(pos, f"**#{pos}**")
                 lines.append(f"{prefix} **{name}** — {wins} pt{'s' if wins != 1 else ''}")
             return "\n".join(lines) if lines else "No data yet."
 
@@ -1646,7 +1647,7 @@ async def event(ctx, *, args):
             games       = max(user_stats.get("games_played", 0), wins)  # at minimum played as many as won
             quarter_entries.append((uid, wins, games))
         quarter_entries.sort(key=lambda x: x[1], reverse=True)
-        quarter_entries = quarter_entries[:15]
+        quarter_entries = quarter_entries[:25]
 
         quarter_embed = discord.Embed(
             title="📊 Current Quarter — Leaderboard",
@@ -1662,7 +1663,7 @@ async def event(ctx, *, args):
             if isinstance(sdata, dict):
                 alltime_entries.append((uid, sdata.get("wins", 0), sdata.get("games_played", 0)))
         alltime_entries.sort(key=lambda x: x[1], reverse=True)
-        alltime_entries = alltime_entries[:15]
+        alltime_entries = alltime_entries[:25]
 
         if alltime_entries:
             alltime_desc = build_lb_description(alltime_entries, guild)
@@ -3364,7 +3365,8 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                 "Examples:\n"
                 "• `r!tournament create 3v3, 1, 0, Friday Scrim, Competitive, <t:1700000000:R>` — 2 teams of 3\n"
                 "• `r!tournament create 3v3v3v3, 2, 1, Friday Scrim, 24 Players, <t:1700000000:R>` — 2 groups of 4 teams\n"
-                "• `r!tournament create ffa8, 1, 0, FFA Event, 8 Players FFA, <t:1700000000:R>` — 8-player Free For All\n\n"
+                "• `r!tournament create ffa, 8, 0, FFA Event, 8 Players FFA, <t:1700000000:R>` — 8-player FFA (using GROUPS)\n"
+                "• `r!tournament create ffa16, 1, 0, FFA Event, 16 Players FFA, <t:1700000000:R>` — 16-player FFA\n"
                 "**FORMAT** = `3v3`, `4v4v4`, `3v3v3v3`, `ffa8`, `ffa16` etc.\n"
                 "**GROUPS** = number of groups (1 = single group)\n"
                 "**SUBSTITUTES** = reserve players per team (0 for solo/FFA)"
@@ -3391,16 +3393,31 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         is_ffa = fmt_raw.startswith("ffa")
 
         if is_ffa:
-            ffa_num = fmt_raw[3:]  # e.g. "ffa8" → "8"
-            if not ffa_num.isdigit() or int(ffa_num) < 2:
+            ffa_str = fmt_raw[3:]  # e.g. "ffa8" → "8", "ffa" → ""
+            if ffa_str == "":
+                # Plain "ffa" — use groups as total player count
+                if groups < 2:
+                    await ctx.send(
+                        "❌ For `ffa` format please specify the number of players via **GROUPS**.\n"
+                        "Example: `r!tournament create ffa, 8, 0, Title, Desc, <t:TS:R>` — 8-player FFA\n"
+                        "Or use the number directly: `ffa8`"
+                    )
+                    return
+                team_size       = 1
+                teams_per_group = groups
+                max_teams       = groups
+                groups          = 1   # treat as single group
+                fmt             = f"FFA{teams_per_group}"
+            elif ffa_str.isdigit() and int(ffa_str) >= 2:
+                team_size       = 1
+                teams_per_group = int(ffa_str)
+                fmt             = f"FFA{ffa_str}"
+            else:
                 await ctx.send(
-                    "❌ Invalid FFA format. Use `ffa` followed by the number of players.\n"
-                    "Examples: `ffa8` (8 players FFA), `ffa16` (16 players FFA)"
+                    "❌ Invalid FFA format. Use `ffa` and specify players via GROUPS, or `ffa8`, `ffa16` etc.\n"
+                    "Example: `r!tournament create ffa, 8, 0, Title, Desc, <t:TS:R>`"
                 )
                 return
-            team_size       = 1
-            teams_per_group = int(ffa_num)
-            fmt             = f"FFA{ffa_num}"
         else:
             segments = fmt_raw.split("v")
             if len(segments) < 2 or not all(s.isdigit() for s in segments):
