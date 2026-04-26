@@ -816,6 +816,19 @@ async def on_message(message):
     if not scrim_active:
         return  # Only track games during an active scrim session
 
+    # Mark this message as counted immediately so r!event leaderboard won't double-count
+    counted_file = guild_file(message.guild.id, "counted_messages.json")
+    try:
+        counted = set()
+        if os.path.exists(counted_file):
+            with open(counted_file, "r") as f:
+                counted = set(json.load(f))
+        counted.add(message.id)
+        with open(counted_file, "w") as f:
+            json.dump(list(counted), f)
+    except Exception as e:
+        print(f"[auto] Could not mark message as counted: {e}")
+
     winner_names = await log_game(message.guild, winner_ids, source="auto")
     if winner_names is not None:
         await message.add_reaction("✅")  # Confirm the game was recorded
@@ -1678,7 +1691,7 @@ async def event(ctx, *, args):
         await leaderboard_channel.send(content=mention_content, embed=quarter_embed)
         if alltime_entries:
             await leaderboard_channel.send(embed=alltime_embed)
-        await ctx.send(f"✅ Leaderboard updated! Found **{games_found}** game(s) with winners.")
+        await ctx.send(f"✅ Leaderboard updated! Found **{new_found}** new game(s) with winners.")
 
     else:
         await ctx.send("❌ Unknown subcommand! Available: `r!event update`, `r!event leaderboard`")
@@ -2582,7 +2595,34 @@ async def slash_cmd(interaction: discord.Interaction):
 # TOKEN is read from the environment variable to keep it out of the source code.
 # Set it with: export TOKEN=your_bot_token  (or via your hosting platform's secrets)
 
-# ─── TEMP: r!syncstats ───────────────────────────────────────────────────────
+# ─── TEMP: r!fixdouble ───────────────────────────────────────────────────────
+# Halves all leaderboard points to correct the double-counting bug.
+# Run ONCE, then delete this command.
+
+@bot.command()
+@has_allowed_role()
+async def fixdouble(ctx):
+    guild       = ctx.guild
+    leaderboard = load_leaderboard(guild.id)
+    stats       = load_stats(guild.id)
+
+    if not leaderboard:
+        await ctx.send("❌ No leaderboard data found.")
+        return
+
+    updated = 0
+    for uid in leaderboard:
+        old = leaderboard[uid]
+        leaderboard[uid] = old // 2
+        user_stats = get_or_create_stats(stats, uid)
+        user_stats["games_won"] = leaderboard[uid]
+        updated += 1
+
+    save_leaderboard(leaderboard, guild.id)
+    save_stats(stats, guild.id)
+    await ctx.send(f"✅ Halved points for **{updated}** players. Run `r!event leaderboard` to update the display.")
+
+
 # Syncs leaderboard points → games_won in stats.json for all players.
 # Run once to fix mismatched data, then delete.
 
