@@ -3098,11 +3098,26 @@ async def handle_ticket_message(message):
             pass
         return
 
-    step = state['step']
+    step    = state['step']
     is_solo = (team_size == 1)
+    is_ffa  = t_data.get("format", "").upper().startswith("FFA") if t_data else False
 
-    # ── Step 1: Team Name & Tag ────────────────────────────────────────────────
+    # ── Step 1: Team Name & Tag  (or FFA: just player name + ID) ─────────────
     if step == 1:
+        if is_ffa:
+            # FFA: ask for in-game name and Discord User ID in one step
+            state['step'] = 'ffa_name'
+            save_active_tickets()
+            embed = discord.Embed(title='🎟️ FFA Registration — Step 1 / 2', color=discord.Color.blurple())
+            embed.add_field(
+                name='🎮 Your In-Game Name',
+                value='Enter your **in-game name**.\n\nExample: `Biffeur`',
+                inline=False
+            )
+            embed.set_footer(text='Type cancel at any time to abort')
+            await message.channel.send(embed=embed)
+            return
+
         import re
         tag_match = re.search(r'\[(.+?)\]', content)
         if not tag_match:
@@ -3136,6 +3151,48 @@ async def handle_ticket_message(message):
         )
         embed.set_footer(text='Type cancel at any time to abort')
         await message.channel.send(embed=embed)
+
+    # ── FFA Step: In-game name ─────────────────────────────────────────────────
+    elif step == 'ffa_name':
+        if not content:
+            await message.channel.send('❌ Please enter your in-game name.')
+            return
+        state['data']['captain_name'] = content
+        state['step'] = 'ffa_id'
+        save_active_tickets()
+        embed = discord.Embed(title='🎟️ FFA Registration — Step 2 / 2', color=discord.Color.blurple())
+        embed.add_field(name='✅ Name', value=f'**{content}**', inline=False)
+        embed.add_field(
+            name='🆔 Discord User ID',
+            value='Enter your **Discord User ID**.\n\nRight-click yourself → **Copy User ID**\n*(Developer Mode must be on)*\n\nExample: `123456789012345678`',
+            inline=False
+        )
+        embed.set_footer(text='Type cancel at any time to abort')
+        await message.channel.send(embed=embed)
+
+    # ── FFA Step: Discord ID → submit ──────────────────────────────────────────
+    elif step == 'ffa_id':
+        if not content.isdigit():
+            await message.channel.send('❌ Please enter a valid Discord User ID (numbers only).')
+            return
+
+        # Check duplicate in existing accepted players
+        existing_ids = []
+        for t in t_data.get('teams', []):
+            if t.get('status') == 'accepted':
+                existing_ids.extend([p['discord_id'] for p in t.get('players', [])])
+        if content in existing_ids:
+            await message.channel.send('❌ This Discord ID is already registered in an accepted slot.')
+            return
+
+        state['data']['captain_id'] = content
+        state['data']['team_name']  = state['data']['captain_name']
+        state['data']['team_tag']   = '[FFA]'
+        state['data']['player_names'] = []
+        state['data']['player_ids']   = []
+        state['data']['subs']         = []
+        state['data']['coaches']      = []
+        await _submit_team(message, state, t_data, guild_id, team_size)
 
     # ── Step 2: Captain (Name: ID) ─────────────────────────────────────────────
     elif step == 2:
@@ -3679,8 +3736,66 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         allowed_roles    = [guild.get_role(rid) for rid in allowed_role_ids if guild.get_role(rid)]
 
         is_solo = (t_data.get("team_size", 1) == 1)
+        is_ffa  = t_data.get("format", "").upper().startswith("FFA")
 
-        for i, team in enumerate(accepted):
+        if is_ffa:
+            # FFA: one shared voice channel for all accepted players
+            overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+            for role in allowed_roles:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, connect=True)
+            for team in accepted:
+                member = guild.get_member(int(team["captain_id"]))
+                if member:
+                    overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
+
+            ffa_ch = await guild.create_voice_channel(
+                f"ffa-{t_data.get('title', 'scrim').lower().replace(' ', '-')[:20]}",
+                category=category,
+                overwrites=overwrites
+            )
+
+            for team in accepted:
+                team["channel_id"] = ffa_ch.id
+                ticket_ch = guild.get_channel(team.get("ticket_channel_id"))
+                if ticket_ch:
+                    await ticket_ch.send(
+                        f"🔊 <@{team['captain_id']}>\n"
+                        f"The **{t_data['format'].upper()}** scrim is starting! "
+                        f"Join the voice channel: {ffa_ch.mention} 🏆"
+                    )
+
+            register_channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
+            scrim_role_obj   = guild.get_role(get_cfg(guild.id, "role_id"))
+            if register_channel and scrim_role_obj:
+                all_mentions = " ".join(f"<@{t['captain_id']}>" for t in accepted)
+                embed = discord.Embed(
+                    title=f"🏆 {t_data.get('title', 'FFA Scrim')} — Starting Now!",
+                    description=(
+                        f"The **{t_data['format'].upper()}** scrim is live!\n\n"
+                        f"**{len(accepted)} Players:** {all_mentions}\n\n"
+                        f"Join the voice channel: {ffa_ch.mention}"
+                    ),
+                    color=discord.Color.green()
+                )
+                await register_channel.send(content=scrim_role_obj.mention, embed=embed)
+
+            save_tournament(guild.id, t_data)
+
+            if scrim_role_obj:
+                for team in accepted:
+                    member = guild.get_member(int(team["captain_id"]))
+                    if member and scrim_role_obj not in member.roles:
+                        try:
+                            await member.add_roles(scrim_role_obj)
+                        except Exception:
+                            pass
+
+            await ctx.send(
+                f"✅ **{t_data['format'].upper()}** FFA started! Shared voice channel {ffa_ch.mention} "
+                f"created for **{len(accepted)}** players.\n"
+                f"Now use `r!event update` to assign Active Scrim roles."
+            )
+            return
             members = [guild.get_member(int(p["discord_id"])) for p in team["players"]]
             members = [m for m in members if m]
             sub_members   = [guild.get_member(int(p["discord_id"])) for p in team.get("substitutes_list", []) if guild.get_member(int(p["discord_id"]))]
