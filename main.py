@@ -1630,14 +1630,18 @@ async def event(ctx, *, args):
         save_stats(stats, guild.id)
 
         def build_lb_description(entries, guild):
-            medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-            lines  = []
-            rank   = 0
+            medals    = {1: "🥇", 2: "🥈", 3: "🥉"}
+            lines     = []
+            rank      = 1
             prev_wins = None
+            skip      = 0
             for i, (user_id, wins, games) in enumerate(entries):
                 if wins != prev_wins:
-                    rank = i + 1
+                    rank      = rank + skip
+                    skip      = 1
                     prev_wins = wins
+                else:
+                    skip += 1
                 prefix = medals.get(rank, f"**#{rank}**")
                 lines.append(f"{prefix} <@{user_id}> — {wins} pt{'s' if wins != 1 else ''}")
             return "\n".join(lines) if lines else "No data yet."
