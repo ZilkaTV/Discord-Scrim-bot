@@ -2754,34 +2754,48 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
             color=discord.Color.gold()
         )
     else:
-        lines = []
-        for i, team in enumerate(accepted):
-            coaches  = team.get("coaches", [])
-            subs     = team.get("substitutes_list", [])
-            cap_id   = team.get("captain_id", "")
-            starters = [p for p in team["players"] if p["discord_id"] != cap_id]
-
-            # All member pings for this team
-            all_pings = (
-                [f"<@{p['discord_id']}>" for p in team["players"]] +
-                [f"<@{p['discord_id']}>" for p in subs] +
-                [f"<@{c['discord_id']}>" for c in coaches]
+        is_ffa_roster = t_data.get("format", "").upper().startswith("FFA")
+        if is_ffa_roster:
+            # FFA: all players in one combined list
+            player_lines = "\n".join(
+                f"**{i+1}.** **{t.get('captain_name', '?')}** — <@{t.get('captain_id', '')}>"
+                for i, t in enumerate(accepted)
             )
+            roster_embed = discord.Embed(
+                title=f"🏆 {t_data.get('title', 'FFA Scrim')} — Registered Players",
+                description=player_lines or "No players yet.",
+                color=discord.Color.gold()
+            )
+        else:
+            lines = []
+            for i, team in enumerate(accepted):
+                coaches  = team.get("coaches", [])
+                subs     = team.get("substitutes_list", [])
+                cap_id   = team.get("captain_id", "")
+                starters = [p for p in team["players"] if p["discord_id"] != cap_id]
 
-            line = f"**{i+1}. {team['tag']} {team['name']}** — {' '.join(all_pings)}\n"
-            if coaches:
-                line += "🧑‍🏫 Coach: " + " / ".join(f"**{c['name']}**" for c in coaches) + "\n"
-            line += f"👤 Captain: **{team.get('captain_name', '?')}**\n"
-            if starters:
-                line += "🎮 Starter: " + " / ".join(f"**{p['name']}**" for p in starters) + "\n"
-            if subs:
+                all_pings = (
+                    [f"<@{p['discord_id']}>" for p in team["players"]] +
+                    [f"<@{p['discord_id']}>" for p in subs] +
+                    [f"<@{c['discord_id']}>" for c in coaches]
+                )
+
+                line = f"**{i+1}. {team['tag']} {team['name']}** — {' '.join(all_pings)}\n"
+                if coaches:
+                    line += "🧑‍🏫 Coach: " + " / ".join(f"**{c['name']}**" for c in coaches) + "\n"
+                line += f"👤 Captain: **{team.get('captain_name', '?')}**\n"
+                if starters:
+                    line += "🎮 Starter: " + " / ".join(f"**{p['name']}**" for p in starters) + "\n"
+                if subs:
+                    line += "🔄 Substitute: " + " / ".join(f"**{p['name']}**" for p in subs)
+                lines.append(line.strip())
                 line += "🔄 Substitute: " + " / ".join(f"**{p['name']}**" for p in subs)
             lines.append(line.strip())
-        roster_embed = discord.Embed(
-            title=f"🏆 {t_data.get('title', 'Team Scrim')} — Registered Teams",
-            description="\n\n".join(lines),
-            color=discord.Color.gold()
-        )
+            roster_embed = discord.Embed(
+                title=f"🏆 {t_data.get('title', 'Team Scrim')} — Registered Teams",
+                description="\n\n".join(lines),
+                color=discord.Color.gold()
+            )
     roster_embed.set_footer(
         text=f"{len(accepted)}/{t_data['max_teams']} teams · "
              + ("🔴 Closed" if t_data.get("closed") else "🟢 Open for registration")
@@ -2879,19 +2893,36 @@ class TournamentRegisterView(discord.ui.View):
         }
         save_active_tickets()
 
-        # Send first question
+        # Send first question — FFA gets a different prompt
         team_size = t_data["team_size"]
-        embed = discord.Embed(
-            title="🎟️ Team Registration",
-            description=(
-                f"Welcome {user.mention}! Let's register your team for the **{t_data['format'].upper()}** scrim.\n\n"
-                f"**Step 1 of 3**\n"
-                f"Please enter your **Team Name and Tag**.\n\n"
-                f"Example: `Alpha Squad [ALF]`\n\n"
-                f"*(Type `cancel` at any time to abort)*"
-            ),
-            color=discord.Color.blurple()
-        )
+        is_ffa_ticket = t_data.get("format", "").upper().startswith("FFA")
+
+        if is_ffa_ticket:
+            # For FFA, go directly to name step
+            active_tickets[ticket_ch.id]["step"] = "ffa_name"
+            save_active_tickets()
+            embed = discord.Embed(
+                title="🎟️ FFA Registration — Step 1 / 2",
+                color=discord.Color.blurple()
+            )
+            embed.add_field(
+                name="🎮 Your In-Game Name",
+                value=f"Welcome {user.mention}! Register for the **{t_data['format'].upper()}** scrim.\n\nEnter your **in-game name**.\n\nExample: `Biffeur`",
+                inline=False
+            )
+            embed.set_footer(text="Type cancel at any time to abort")
+        else:
+            embed = discord.Embed(
+                title="🎟️ Team Registration",
+                description=(
+                    f"Welcome {user.mention}! Let's register your team for the **{t_data['format'].upper()}** scrim.\n\n"
+                    f"**Step 1 of 5**\n"
+                    f"Please enter your **Team Name and Tag**.\n\n"
+                    f"Example: `Alpha Squad [ALF]`\n\n"
+                    f"*(Type `cancel` at any time to abort)*"
+                ),
+                color=discord.Color.blurple()
+            )
         await ticket_ch.send(embed=embed)
         await interaction.response.send_message(
             f"✅ Your ticket has been created: {ticket_ch.mention}", ephemeral=True
@@ -3650,27 +3681,38 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
 
         # Accepted teams
         if accepted:
-            acc_lines = []
-            for t in accepted:
-                coaches  = t.get("coaches", [])
-                subs     = t.get("substitutes_list", [])
-                cap_id   = t.get("captain_id", "")
-                starters = [p for p in t["players"] if p["discord_id"] != cap_id]
-
-                line = f"**{t['tag']} {t['name']}**\n"
-                if coaches:
-                    line += "🧑‍🏫 Coach: " + " / ".join(f"**{c['name']}**" for c in coaches) + "\n"
-                line += f"👤 Captain: **{t.get('captain_name', '?')}**\n"
-                if starters:
-                    line += "🎮 Starter: " + " / ".join(f"**{p['name']}**" for p in starters) + "\n"
-                if subs:
-                    line += "🔄 Substitute: " + " / ".join(f"**{p['name']}**" for p in subs)
-                acc_lines.append(line.strip())
-            embed.add_field(
-                name=f"✅ Accepted ({len(accepted)}/{t_data['max_teams']})",
-                value="\n\n".join(acc_lines),
-                inline=False
-            )
+            is_ffa_list = t_data.get("format", "").upper().startswith("FFA")
+            if is_ffa_list:
+                player_lines = "\n".join(
+                    f"**{i+1}.** **{t.get('captain_name', '?')}** — <@{t.get('captain_id', '')}>"
+                    for i, t in enumerate(accepted)
+                )
+                embed.add_field(
+                    name=f"✅ Accepted Players ({len(accepted)}/{t_data['max_teams']})",
+                    value=player_lines or "None yet",
+                    inline=False
+                )
+            else:
+                acc_lines = []
+                for t in accepted:
+                    coaches  = t.get("coaches", [])
+                    subs     = t.get("substitutes_list", [])
+                    cap_id   = t.get("captain_id", "")
+                    starters = [p for p in t["players"] if p["discord_id"] != cap_id]
+                    line = f"**{t['tag']} {t['name']}**\n"
+                    if coaches:
+                        line += "🧑‍🏫 Coach: " + " / ".join(f"**{c['name']}**" for c in coaches) + "\n"
+                    line += f"👤 Captain: **{t.get('captain_name', '?')}**\n"
+                    if starters:
+                        line += "🎮 Starter: " + " / ".join(f"**{p['name']}**" for p in starters) + "\n"
+                    if subs:
+                        line += "🔄 Substitute: " + " / ".join(f"**{p['name']}**" for p in subs)
+                    acc_lines.append(line.strip())
+                embed.add_field(
+                    name=f"✅ Accepted ({len(accepted)}/{t_data['max_teams']})",
+                    value="\n\n".join(acc_lines),
+                    inline=False
+                )
         else:
             embed.add_field(name=f"✅ Accepted (0/{t_data['max_teams']})", value="None yet", inline=False)
 
