@@ -2774,11 +2774,14 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
                 cap_id   = team.get("captain_id", "")
                 starters = [p for p in team["players"] if p["discord_id"] != cap_id]
 
-                all_pings = (
-                    [f"<@{p['discord_id']}>" for p in team["players"]] +
-                    [f"<@{p['discord_id']}>" for p in subs] +
-                    [f"<@{c['discord_id']}>" for c in coaches]
-                )
+                seen_ids = set()
+                all_pings = []
+                for p in team["players"] + subs + coaches:
+                    uid = p.get("discord_id") or p.get("discord_id", "")
+                    member = guild.get_member(int(uid)) if uid else None
+                    if uid and uid not in seen_ids and (not member or not member.bot):
+                        all_pings.append(f"<@{uid}>")
+                        seen_ids.add(uid)
 
                 line = f"**{i+1}. {team['tag']} {team['name']}** — {' '.join(all_pings)}\n"
                 if coaches:
@@ -2787,10 +2790,8 @@ async def update_tournament_embeds(guild: discord.Guild, t_data: dict):
                 if starters:
                     line += "🎮 Starter: " + " / ".join(f"**{p['name']}**" for p in starters) + "\n"
                 if subs:
-                    line += "🔄 Substitute: " + " / ".join(f"**{p['name']}**" for p in subs)
+                    line += "🔄 Substitute: " + " / ".join(f"**{p['name']}**" for p in subs) + "\n"
                 lines.append(line.strip())
-                line += "🔄 Substitute: " + " / ".join(f"**{p['name']}**" for p in subs)
-            lines.append(line.strip())
             roster_embed = discord.Embed(
                 title=f"🏆 {t_data.get('title', 'Team Scrim')} — Registered Teams",
                 description="\n\n".join(lines),
