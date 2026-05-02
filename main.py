@@ -2962,7 +2962,7 @@ class TournamentRegisterView(discord.ui.View):
         guild = interaction.guild
         user  = interaction.user
 
-        # Check if user already has an open ticket
+        # Check if user already has an open ticket (allow new ticket if rejected)
         for ch_id, state in active_tickets.items():
             if state.get("user_id") == user.id and state.get("guild_id") == guild.id:
                 ch = guild.get_channel(ch_id)
@@ -2970,6 +2970,26 @@ class TournamentRegisterView(discord.ui.View):
                     await interaction.response.send_message(
                         f"❌ You already have an open ticket: {ch.mention}", ephemeral=True
                     )
+                    return
+
+        # Check if user is already accepted or pending in a team
+        for team in t_data.get("teams", []):
+            if team.get("status") in ("accepted", "pending"):
+                all_ids = (
+                    [team.get("captain_id", "")] +
+                    [p["discord_id"] for p in team.get("players", [])] +
+                    [p["discord_id"] for p in team.get("substitutes_list", [])]
+                )
+                if str(user.id) in all_ids:
+                    status = team.get("status")
+                    if status == "accepted":
+                        await interaction.response.send_message(
+                            f"❌ You are already registered as part of **{team['tag']} {team['name']}**.", ephemeral=True
+                        )
+                    else:
+                        await interaction.response.send_message(
+                            f"⏳ You already have a pending registration for **{team['tag']} {team['name']}**. Wait for a host to review it.", ephemeral=True
+                        )
                     return
 
         # Create private ticket channel
@@ -3144,6 +3164,18 @@ class TeamApprovalView(discord.ui.View):
         if slots_left <= 0:
             t_data["closed"] = True
             save_tournament(self.guild_id, t_data)
+            # Notify open tickets
+            for ch_id, state in list(active_tickets.items()):
+                if state.get("guild_id") == self.guild_id:
+                    ticket_ch = interaction.guild.get_channel(ch_id)
+                    if ticket_ch:
+                        try:
+                            await ticket_ch.send(
+                                "🔒 **Registration is now CLOSED — all slots are filled!** "
+                                "You can no longer complete your registration."
+                            )
+                        except Exception:
+                            pass
             # Update registration embed to show closed status
             await update_tournament_embeds(interaction.guild, t_data)
             register_channel = bot.get_channel(get_cfg(self.guild_id, "channel_id"))
@@ -3388,11 +3420,11 @@ async def handle_ticket_message(message):
             save_active_tickets()
             if substitutes > 0:
                 embed = discord.Embed(title='🎟️ Team Registration — Step 4 / 5', color=discord.Color.blurple())
-                embed.add_field(name=f'🔄 Substitutes ({substitutes})', value=f'Enter **{substitutes}** substitute(s) as `Name: USER_ID`, one per line.', inline=False)
+                embed.add_field(name=f'🔄 Substitutes ({substitutes})', value=f'Enter **{substitutes}** substitute(s) as `Name: Discord User ID`, one per line.', inline=False)
                 embed.set_footer(text='After this: coaches (optional) | Type cancel to abort')
             else:
                 embed = discord.Embed(title='🎟️ Team Registration — Coaches (Optional)', color=discord.Color.blurple())
-                embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
+                embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: Discord User ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
                 embed.set_footer(text='Coaches get Spectator role + access to game-links & scrim-chat')
             await message.channel.send(embed=embed)
 
@@ -3421,39 +3453,60 @@ async def handle_ticket_message(message):
         if substitutes > 0:
             embed = discord.Embed(title='🎟️ Team Registration — Step 4 / 5', color=discord.Color.blurple())
             embed.add_field(
-                name=f'🔄 Substitutes ({substitutes})',
-                value=f'Enter **{substitutes}** substitute(s) as `Name: USER_ID`, one per line.\n\nExample:\n```\nSubOne: 112233445566778899\n```',
+                name=f'🔄 Substitutes (optional, max {substitutes})',
+                value=f'Enter up to **{substitutes}** substitute(s) as `Name: Discord User ID`, one per line.\nType `none` to skip.\n\nExample:\n```\nSubOne: 112233445566778899\n```',
                 inline=False
             )
             embed.set_footer(text='After this: coaches (optional) | Type cancel to abort')
         else:
             embed = discord.Embed(title='🎟️ Team Registration — Coaches (Optional)', color=discord.Color.blurple())
-            embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
+            embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: Discord User ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
             embed.set_footer(text='Coaches get Spectator role + access to game-links & scrim-chat')
         await message.channel.send(embed=embed)
 
-    # ── Step 4: Substitutes ────────────────────────────────────────────────────
+    # ── Step 4: Substitutes (optional) ────────────────────────────────────────
     elif step == 4:
+        if content.lower() == "none" or content == "0":
+            state['data']['subs'] = []
+            state['step'] = 5
+            save_active_tickets()
+            embed = discord.Embed(title='🎟️ Team Registration — Coaches (Optional)', color=discord.Color.blurple())
+            embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: Discord User ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
+            embed.set_footer(text='Coaches get Spectator role + access to game-links & scrim-chat')
+            await message.channel.send(embed=embed)
+            return
+
         parsed, errors = parse_name_id_lines(content, substitutes)
         if errors:
-            await message.channel.send('❌ Errors:\n' + '\n'.join(errors) + '\nPlease re-enter all substitutes.')
+            await message.channel.send('❌ Errors:\n' + '\n'.join(errors) + '\nPlease re-enter all substitutes or type `none` to skip.')
             return
         if len(parsed) != substitutes:
-            await message.channel.send(f'❌ Please enter exactly **{substitutes}** substitute(s). You entered {len(parsed)}.')
+            await message.channel.send(f'❌ Please enter exactly **{substitutes}** substitute(s), or type `none` to skip. You entered {len(parsed)}.')
             return
 
         captain_id = state['data']['captain_id']
         all_ids    = [captain_id] + state['data']['player_ids'] + [p['discord_id'] for p in parsed]
         if len(set(all_ids)) < len(all_ids):
-            await message.channel.send('❌ Duplicate User IDs detected! Each player can only appear once.')
+            await message.channel.send('❌ Duplicate Discord User IDs detected! Each player can only appear once.')
             return
+
+        # Check against already accepted players
+        existing_ids = []
+        for t in t_data.get('teams', []):
+            if t.get('status') == 'accepted':
+                existing_ids.extend([p['discord_id'] for p in t.get('players', [])])
+                existing_ids.extend([p['discord_id'] for p in t.get('substitutes_list', [])])
+        for p in parsed:
+            if p['discord_id'] in existing_ids:
+                await message.channel.send(f"❌ **{p['name']}** is already registered in an accepted team.")
+                return
 
         state['data']['subs'] = parsed
         state['step'] = 5
         save_active_tickets()
 
         embed = discord.Embed(title='🎟️ Team Registration — Coaches (Optional)', color=discord.Color.blurple())
-        embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: USER_ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
+        embed.add_field(name='🧑‍🏫 Coaches (max 3)', value='Enter coach(es) as `Name: Discord User ID`, one per line.\nType `none` if none.\n\nExample:\n```\nCoachMike: 123456789012345678\n```', inline=False)
         embed.set_footer(text='Coaches get Spectator role + access to game-links & scrim-chat')
         await message.channel.send(embed=embed)
 
@@ -3857,6 +3910,19 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
         save_tournament(guild.id, t_data)
         accepted = [t for t in t_data.get("teams", []) if t["status"] == "accepted"]
 
+        # Notify all open ticket channels that registration is closed
+        for ch_id, state in list(active_tickets.items()):
+            if state.get("guild_id") == guild.id:
+                ticket_ch = guild.get_channel(ch_id)
+                if ticket_ch:
+                    try:
+                        await ticket_ch.send(
+                            "🔒 **Registration has been closed!** You can no longer complete your registration. "
+                            "This ticket will remain open — contact a host if you have questions."
+                        )
+                    except Exception:
+                        pass
+
         # Update the registration embed (slots + status)
         await update_tournament_embeds(guild, t_data)
 
@@ -4034,6 +4100,59 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                 color=discord.Color.green()
             )
             await register_channel.send(content=scrim_role.mention, embed=embed)
+
+    # ── REMOVE ────────────────────────────────────────────────────────────────
+    elif subcommand == "remove":
+        t_data = load_tournament(guild.id)
+        if not t_data:
+            await ctx.send("❌ No active tournament.")
+            return
+        if not args:
+            await ctx.send(
+                "❌ Usage: `r!tournament remove TEAM_ID`\n"
+                "Use `r!tournament list` to see team IDs (shown in review channel footers).\n"
+                "Or use the team name: `r!tournament remove Alpha Squad`"
+            )
+            return
+
+        # Find team by team_id or name
+        target = next(
+            (t for t in t_data.get("teams", [])
+             if t["team_id"] == args.strip() or t["name"].lower() == args.strip().lower()),
+            None
+        )
+        if not target:
+            await ctx.send(f"❌ No team found with ID or name `{args.strip()}`.\nUse `r!tournament list` to see all teams.")
+            return
+
+        old_status = target["status"]
+        target["status"] = "rejected"
+        save_tournament(guild.id, t_data)
+
+        # Remove Scrim Player role if they had it
+        scrim_role = guild.get_role(get_cfg(guild.id, "role_id"))
+        if scrim_role and old_status == "accepted":
+            all_players = target.get("players", []) + target.get("substitutes_list", [])
+            for p in all_players:
+                member = guild.get_member(int(p["discord_id"]))
+                if member and scrim_role in member.roles:
+                    try:
+                        await member.remove_roles(scrim_role)
+                    except Exception:
+                        pass
+
+        # Notify in ticket channel
+        ticket_ch = guild.get_channel(target.get("ticket_channel_id"))
+        if ticket_ch:
+            await ticket_ch.send(
+                f"❌ Your team **{target['tag']} {target['name']}** has been **removed** from the tournament by a host.\n"
+                f"Contact a host for more information. You may re-register if registration is still open."
+            )
+
+        # Update roster
+        await update_tournament_embeds(guild, t_data)
+
+        await ctx.send(f"✅ Team **{target['tag']} {target['name']}** removed (status set to rejected).")
 
     # ── DELETE ────────────────────────────────────────────────────────────────
     elif subcommand == "delete":
@@ -4243,6 +4362,14 @@ async def slash_tournament_delete(interaction: discord.Interaction):
     await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
     await tournament(ctx, subcommand="delete")
+
+@bot.tree.command(name="tournament_remove", description="Remove a team from the tournament")
+@slash_has_role()
+@app_commands.describe(team="Team ID or team name to remove")
+async def slash_tournament_remove(interaction: discord.Interaction, team: str):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await tournament(ctx, subcommand="remove", args=team)
 
 
 bot.run(os.getenv("TOKEN"))
