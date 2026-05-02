@@ -1992,10 +1992,12 @@ async def info(ctx):
             "- Supports team formats (`3v3`, `3v3v3v3`), solo formats (`1v1`, `1v1v1`), FFA (`ffa8`, `ffa16`) and multiple groups\n"
             "- Players register via button → private ticket channel → guided step-by-step form\n"
             "- Ticket asks for: Captain, Starters, Substitutes (optional), Coaches (optional, max 3)\n"
-            "- Staff accepts/rejects teams via buttons — team gets notified in ticket\n"
+            "- Players with open/pending tickets cannot register twice — rejected players can re-register\n"
+            "- Staff accepts/rejects/removes teams via buttons or commands\n"
             "- Coaches receive Spectator role + access to game-links & scrim-chat\n"
             "- Creates private voice channels per team at start (team + subs + coaches)\n"
             "- Solo/FFA formats skip voice channels, substitutes and coaches\n"
+            "- Open tickets are notified when registration closes\n"
             "- Registered teams are displayed in a dedicated channel with live updates\n\n"
             "**Multi-Server:** Each server has its own config, stats and leaderboard.\n"
             "**New Server Setup:** Use `/setup` or `r!setup` *(Admin only)*\n"
@@ -2033,6 +2035,7 @@ async def cmd(ctx):
         "`r!tournament list` — Show all registered teams\n"
         "`r!tournament close` — Close registrations\n"
         "`r!tournament start` — Assign roles & create team VCs\n"
+        "`r!tournament remove NAME/ID` — Remove a team\n"
         "`r!tournament delete` — End tournament & full cleanup"
     ), inline=False)
 
@@ -2579,6 +2582,7 @@ async def slash_cmd(interaction: discord.Interaction):
         "`/tournament_list` — Show all registered teams\n"
         "`/tournament_close` — Close registrations\n"
         "`/tournament_start` — Assign roles & create team VCs\n"
+        "`/tournament_remove` — Remove a team from the tournament\n"
         "`/tournament_delete` — End tournament & full cleanup"
     ), inline=False)
 
