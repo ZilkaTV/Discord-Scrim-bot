@@ -4560,7 +4560,114 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             )
             await register_channel.send(content=scrim_role.mention, embed=embed)
 
-    # ── REPAIR ────────────────────────────────────────────────────────────────
+    # ── REBUILD ───────────────────────────────────────────────────────────────
+    elif subcommand == "rebuild":
+        if not args:
+            await ctx.send(
+                "❌ Usage: `r!tournament rebuild FORMAT, GROUPS, SUBS, Title, <t:TIMESTAMP:R>`\n"
+                "Example: `r!tournament rebuild 3v3v3v3, 1, 1, World Cup Prep, <t:1747000000:R>`\n\n"
+                "This rebuilds the tournament data without creating tickets or channels.\n"
+                "After rebuilding, use `r!tournament repair` to restore the registration post."
+            )
+            return
+
+        parts = [p.strip() for p in args.split(",", 5)]
+        if len(parts) < 5:
+            await ctx.send("❌ Please provide: FORMAT, GROUPS, SUBS, Title, Timestamp")
+            return
+
+        fmt_raw     = parts[0].lower().strip()
+        groups_str  = parts[1].strip()
+        sub_str     = parts[2].strip()
+        title       = parts[3].strip()
+        time_str    = parts[4].strip()
+
+        import re
+        is_ffa = fmt_raw.startswith("ffa")
+
+        try:
+            groups      = int(groups_str)
+            substitutes = int(sub_str)
+        except ValueError:
+            await ctx.send("❌ GROUPS and SUBSTITUTES must be numbers.")
+            return
+
+        if is_ffa:
+            ffa_str = fmt_raw[3:]
+            if ffa_str == "":
+                team_size       = 1
+                teams_per_group = groups
+                max_teams       = groups
+                groups          = 1
+                fmt             = f"FFA{teams_per_group}"
+            elif ffa_str.isdigit():
+                team_size       = 1
+                teams_per_group = int(ffa_str)
+                max_teams       = teams_per_group * groups
+                fmt             = f"FFA{ffa_str}"
+            else:
+                await ctx.send("❌ Invalid FFA format.")
+                return
+        else:
+            segments = fmt_raw.split("v")
+            if len(segments) < 2 or not all(s.isdigit() for s in segments):
+                await ctx.send("❌ Invalid format. Use `3v3v3v3`, `ffa8` etc.")
+                return
+            team_sizes      = [int(s) for s in segments]
+            team_size       = team_sizes[0]
+            teams_per_group = len(team_sizes)
+            max_teams       = teams_per_group * groups
+            fmt             = fmt_raw
+
+        max_players = team_size * max_teams
+
+        ts_match = re.search(r'<t:(\d+)', time_str)
+        event_id_found = None
+        if ts_match:
+            target_ts = int(ts_match.group(1))
+            # Try to match an existing Discord event
+            try:
+                events = await guild.fetch_scheduled_events()
+                for ev in events:
+                    ev_ts = int(ev.start_time.timestamp())
+                    if abs(ev_ts - target_ts) < 300:  # within 5 min
+                        event_id_found = ev.id
+                        await ctx.send(f"🔗 Matched Discord event: **{ev.name}**")
+                        break
+            except Exception:
+                pass
+
+        tid = next_tournament_id(guild.id)
+        t_data = {
+            "tournament_id":     tid,
+            "format":            fmt,
+            "title":             title,
+            "team_size":         team_size,
+            "teams_per_group":   teams_per_group,
+            "groups":            groups,
+            "max_teams":         max_teams,
+            "max_players":       max_players,
+            "substitutes":       substitutes,
+            "closed":            False,
+            "event_id":          event_id_found,
+            "review_channel_id": None,
+            "roster_channel_id": get_cfg(guild.id, "registered_teams_channel_id"),
+            "roster_message_id": None,
+            "register_message_id": None,
+            "teams":             []
+        }
+        save_tournament(guild.id, t_data)
+
+        await ctx.send(
+            f"✅ Tournament data rebuilt!\n"
+            f"• **{title}** — {fmt.upper()} | {max_teams} teams | {substitutes} subs\n"
+            f"• Tournament ID: `{tid}`\n"
+            + (f"• Event linked: ✅\n" if event_id_found else "• Event: not linked (no matching event found)\n") +
+            f"\nNow run:\n"
+            f"1. `r!tournament repair {tid}` — restore registration post\n"
+            f"2. Add teams back manually if needed with `r!tournament repair` buttons\n"
+            f"   *(or have players re-register)*"
+        )
     elif subcommand == "repair":
         tournaments = load_tournaments(guild.id)
         if not tournaments:
