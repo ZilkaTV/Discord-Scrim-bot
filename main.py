@@ -3301,7 +3301,7 @@ class TournamentRegisterView(discord.ui.View):
                     )
                     return
 
-        # Check if user is already accepted or pending in a team
+        # Check if user is already accepted or pending in THIS tournament
         for team in t_data.get("teams", []):
             if team.get("status") in ("accepted", "pending"):
                 all_ids = (
@@ -3332,14 +3332,18 @@ class TournamentRegisterView(discord.ui.View):
         for role in allowed_roles:
             overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-        # Find or create ticket category
-        cat_name = "📋 SCRIM TICKETS"
+        # Create a short tournament identifier for channel naming (max 8 chars)
+        tourn_short = t_data.get("title", t_data.get("format", "scrim"))
+        tourn_short = tourn_short[:8].lower().replace(" ", "-")
+
+        # Find or create tournament-specific ticket category
+        cat_name = f"📋 TICKETS — {t_data.get('title', t_data.get('format','SCRIM'))[:20].upper()}"
         category = discord.utils.get(guild.categories, name=cat_name)
         if not category:
             category = await guild.create_category(cat_name)
 
         ticket_ch = await guild.create_text_channel(
-            name=f"[ticket]-{user.display_name.lower().replace(' ', '-')[:20]}",
+            name=f"[{tourn_short}]-{user.display_name.lower().replace(' ', '-')[:15]}",
             category=category,
             overwrites=overwrites,
             topic=f"Team registration ticket for {user.display_name}"
@@ -3875,7 +3879,7 @@ async def _submit_team(message, state, t_data, guild_id, team_size):
     subs       = state['data'].get('subs', [])
     coaches    = state['data'].get('coaches', [])
 
-    # Check duplicates against accepted teams
+    # Check duplicates only within THIS tournament's accepted teams
     existing_ids = []
     for t in t_data.get('teams', []):
         if t.get('status') == 'accepted':
@@ -3885,7 +3889,7 @@ async def _submit_team(message, state, t_data, guild_id, team_size):
             existing_ids.append(t.get('captain_id', ''))
     all_new = [captain_id] + ids + [s['discord_id'] for s in subs] + [c['discord_id'] for c in coaches]
     if any(pid in existing_ids for pid in all_new):
-        await message.channel.send('❌ One or more players are already registered in an accepted team.')
+        await message.channel.send('❌ One or more players are already registered in an accepted team in **this** tournament.')
         return
 
     starters = [{'name': state['data']['captain_name'], 'discord_id': captain_id}] + \
@@ -3919,15 +3923,24 @@ async def _submit_team(message, state, t_data, guild_id, team_size):
     review_ch_id = t_data.get('review_channel_id')
     review_ch    = guild.get_channel(review_ch_id) if review_ch_id else bot.get_channel(get_cfg(guild_id, 'scrim_chat_id'))
     if review_ch:
-        review = discord.Embed(title=f'📋 New Team — {team["tag"]} {team["name"]}', color=discord.Color.orange())
+        # Build clean description instead of many fields
+        lines = []
         if coaches:
-            review.add_field(name=f'🧑‍🏫 Coaches ({len(coaches)})', value='\n'.join(f'**{c["name"]}** — <@{c["discord_id"]}>' for c in coaches), inline=False)
-        review.add_field(name='👤 Captain', value=f'**{team["captain_name"]}** — <@{captain_id}>', inline=False)
-        review.add_field(name=f'🎮 Starters ({len(starters)})', value='\n'.join(f'**{p["name"]}** — <@{p["discord_id"]}>' for p in starters), inline=False)
+            lines.append("🧑‍🏫 **Coach" + ("es" if len(coaches) > 1 else "") + ":** " + " / ".join(f"{c['name']} <@{c['discord_id']}>" for c in coaches))
+        lines.append(f"👤 **Captain:** {team['captain_name']} <@{captain_id}>")
+        starters_no_cap = [p for p in starters if p["discord_id"] != captain_id]
+        if starters_no_cap:
+            lines.append("🎮 **Starters:** " + " / ".join(f"{p['name']} <@{p['discord_id']}>" for p in starters_no_cap))
         if subs:
-            review.add_field(name=f'🔄 Substitutes ({len(subs)})', value='\n'.join(f'**{p["name"]}** — <@{p["discord_id"]}>' for p in subs), inline=False)
-        review.add_field(name='Submitted by', value=f'<@{state["user_id"]}>', inline=False)
-        review.set_footer(text=f'Team ID: {team_id}')
+            lines.append("🔄 **Substitutes:** " + " / ".join(f"{p['name']} <@{p['discord_id']}>" for p in subs))
+        lines.append(f"\n📬 Submitted by <@{state['user_id']}>")
+
+        review = discord.Embed(
+            title=f"📋 {team['tag']} {team['name']}",
+            description="\n".join(lines),
+            color=discord.Color.orange()
+        )
+        review.set_footer(text=f"Team ID: {team_id} | Use ✅ Accept or ❌ Reject below")
         view = TeamApprovalView(guild_id=guild_id, team_id=team_id)
         await review_ch.send(embed=review, view=view)
 
@@ -4084,8 +4097,8 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             await ctx.send(f"⚠️ Could not create Discord event: `{e}`\nContinuing with registration post...")
             event = None
 
-        # Find/create review channel for staff
-        cat_name   = "📋 SCRIM TICKETS"
+        # Find/create ticket category named after this tournament
+        cat_name   = f"📋 TICKETS — {title[:20].upper()}"
         category   = discord.utils.get(guild.categories, name=cat_name)
         if not category:
             category = await guild.create_category(cat_name)
@@ -4099,10 +4112,10 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             review_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
         review_ch = await guild.create_text_channel(
-            name="team-registrations",
+            name=f"registrations-{title.lower().replace(' ','-')[:20]}",
             category=category,
             overwrites=review_overwrites,
-            topic="Team registration reviews for Staff/Host"
+            topic=f"Team registration reviews for {title} | Staff/Host only"
         )
 
         # Save tournament
@@ -4504,63 +4517,9 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             f"✅ Registration post repaired in {register_channel.mention}!\n"
             f"• **{len(accepted)}/{max_teams}** teams currently registered\n"
             f"• Status: {status_val}\n"
-            + (f"• Event link restored: [Click here]({event_link})\n" if event_link else "")
+            + (f"• Event link restored: [Click here]({event_link})\n" if event_link else "") +
+            f"\nIf team voice channels are also missing, use `r!tournament start` to recreate them."
         )
-
-        # Check if voice channels were already created — offer to recreate missing ones
-        teams_missing_vc = [t for t in accepted if not t.get("channel_id") or not guild.get_channel(t.get("channel_id", 0))]
-        if teams_missing_vc:
-            is_ffa  = fmt.startswith("FFA")
-            is_solo = team_size == 1
-
-            if is_ffa:
-                await ctx.send(f"🔊 Found **{len(teams_missing_vc)}** FFA players without a voice channel. Recreating shared FFA VC...")
-                cat_name = f"🏆 SCRIM — {fmt}"
-                category = discord.utils.get(guild.categories, name=cat_name)
-                if not category:
-                    category = await guild.create_category(cat_name)
-                allowed_role_ids = get_cfg(guild.id, "allowed_roles")
-                allowed_roles    = [guild.get_role(rid) for rid in allowed_role_ids if guild.get_role(rid)]
-                overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
-                for role in allowed_roles:
-                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, connect=True)
-                for team in accepted:
-                    member = guild.get_member(int(team["captain_id"]))
-                    if member:
-                        overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
-                ffa_ch = await guild.create_voice_channel(f"ffa-{title.lower().replace(' ','-')[:20]}", category=category, overwrites=overwrites)
-                for team in accepted:
-                    team["channel_id"] = ffa_ch.id
-                save_tournament(guild.id, t_data)
-                await ctx.send(f"✅ Shared FFA voice channel recreated: {ffa_ch.mention}")
-
-            elif not is_solo and teams_missing_vc:
-                await ctx.send(f"🔊 Found **{len(teams_missing_vc)}** teams without a voice channel. Recreating...")
-                cat_name = f"🏆 SCRIM — {fmt}"
-                category = discord.utils.get(guild.categories, name=cat_name)
-                if not category:
-                    category = await guild.create_category(cat_name)
-                allowed_role_ids = get_cfg(guild.id, "allowed_roles")
-                allowed_roles    = [guild.get_role(rid) for rid in allowed_role_ids if guild.get_role(rid)]
-                for i, team in enumerate(teams_missing_vc):
-                    all_members = (
-                        [guild.get_member(int(p["discord_id"])) for p in team.get("players", [])] +
-                        [guild.get_member(int(p["discord_id"])) for p in team.get("substitutes_list", [])] +
-                        [guild.get_member(int(c["discord_id"])) for c in team.get("coaches", [])]
-                    )
-                    all_members = [m for m in all_members if m]
-                    overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
-                    for role in allowed_roles:
-                        overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                    for member in all_members:
-                        overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
-                    ch_name = f"team-{team['name'].lower().replace(' ','-')[:20]}"
-                    ch = await guild.create_voice_channel(ch_name, category=category, overwrites=overwrites)
-                    team["channel_id"] = ch.id
-                save_tournament(guild.id, t_data)
-                await ctx.send(f"✅ Recreated **{len(teams_missing_vc)}** voice channels.")
-            else:
-                pass  # Solo — no VCs needed
 
     # ── REMOVE ────────────────────────────────────────────────────────────────
     elif subcommand == "remove":
