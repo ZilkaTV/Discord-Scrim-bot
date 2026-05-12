@@ -4691,15 +4691,29 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
 
     # ── DELETE ────────────────────────────────────────────────────────────────
     elif subcommand == "delete":
-        t_data = load_tournament(guild.id)
-        if not t_data:
-            await ctx.send("❌ No active tournament.")
+        tournaments = load_tournaments(guild.id)
+        if not tournaments:
+            await ctx.send("❌ No active tournaments.")
             return
 
-        await ctx.send("⏳ Cleaning up tournament...")
+        # Require ID if multiple tournaments exist
+        if len(tournaments) > 1:
+            if not args:
+                ids_list = "\n".join(f"• `{t.get('tournament_id')}` — **{t.get('title', t['format'].upper())}**" for t in tournaments)
+                await ctx.send(f"⚠️ Multiple tournaments active. Please specify which one to delete:\n{ids_list}\nUsage: `r!tournament delete TOURNAMENT_ID`")
+                return
+            t_data = load_tournament(guild.id, args.strip())
+            if not t_data:
+                await ctx.send(f"❌ No tournament found with ID `{args.strip()}`.\nUse `r!tournament list` to see all IDs.")
+                return
+        else:
+            t_data = tournaments[0]
+
+        tid = t_data.get("tournament_id", "t0")
+        await ctx.send(f"⏳ Cleaning up tournament **{t_data.get('title', t_data['format'].upper())}**...")
         deleted = 0
 
-        # End/delete the Discord scheduled event (active, future, or any status)
+        # Cancel the Discord scheduled event
         event_id = t_data.get("event_id")
         if event_id:
             try:
@@ -4715,8 +4729,8 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             except Exception as e:
                 print(f"Could not cancel tournament event: {e}")
 
-        # Close any open ticket conversations and notify players
-        to_remove = [cid for cid, s in active_tickets.items() if s.get("guild_id") == guild.id]
+        # Close only tickets belonging to THIS tournament
+        to_remove = [cid for cid, s in active_tickets.items() if s.get("guild_id") == guild.id and s.get("tournament_id") == tid]
         for cid in to_remove:
             ch = guild.get_channel(cid)
             if ch:
@@ -4730,7 +4744,7 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                 del active_tickets[cid]
         save_active_tickets()
 
-        # Delete team voice channels
+        # Delete team voice channels and ticket channels for THIS tournament only
         for team in t_data.get("teams", []):
             if team.get("channel_id"):
                 ch = guild.get_channel(team["channel_id"])
@@ -4740,7 +4754,6 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                         deleted += 1
                     except Exception as e:
                         print(f"Error deleting team channel: {e}")
-            # Delete ticket channels that weren't already deleted above
             if team.get("ticket_channel_id"):
                 ch = guild.get_channel(team["ticket_channel_id"])
                 if ch:
@@ -4751,20 +4764,17 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                     except Exception:
                         pass
 
-        # Clear roster channel
+        # Clear roster channel (only this tournament's post)
         roster_ch = guild.get_channel(t_data.get("roster_channel_id"))
-        if roster_ch:
+        roster_msg_id = t_data.get("roster_message_id")
+        if roster_ch and roster_msg_id:
             try:
-                async for msg in roster_ch.history(limit=50):
-                    if msg.author == bot.user:
-                        try:
-                            await msg.delete()
-                        except Exception:
-                            pass
-            except Exception as e:
-                print(f"Error clearing roster channel: {e}")
+                msg = await roster_ch.fetch_message(roster_msg_id)
+                await msg.delete()
+            except Exception:
+                pass
 
-        # Delete review channel and ticket category
+        # Delete review channel
         review_ch = guild.get_channel(t_data.get("review_channel_id"))
         if review_ch:
             try:
@@ -4772,67 +4782,71 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             except Exception:
                 pass
 
-        # Delete scrim category if empty
-        for cat_name in [f"🏆 SCRIM — {t_data['format'].upper()}", "📋 SCRIM TICKETS"]:
-            cat = discord.utils.get(guild.categories, name=cat_name)
-            if cat and len(cat.channels) == 0:
-                try:
-                    await cat.delete()
-                except Exception:
-                    pass
-
-        # Delete ALL bot messages in register channel (registration post, closed messages, start announcements)
-        reg_ch = bot.get_channel(get_cfg(guild.id, "channel_id"))
-        if reg_ch:
+        # Delete ticket category if empty
+        cat_name = f"📋 TICKETS — {t_data.get('title', t_data['format'])[:20].upper()}"
+        cat = discord.utils.get(guild.categories, name=cat_name)
+        if cat and len(cat.channels) == 0:
             try:
-                async for msg in reg_ch.history(limit=200):
-                    if msg.author == bot.user:
-                        try:
-                            await msg.delete()
-                        except Exception:
-                            pass
-            except Exception as e:
-                print(f"Error cleaning register channel: {e}")
+                await cat.delete()
+            except Exception:
+                pass
 
-        # Remove Scrim Player/Spectator roles and coach channel perms from all accepted players
+        # Delete scrim voice category if empty
+        scrim_cat = discord.utils.get(guild.categories, name=f"🏆 SCRIM — {t_data['format'].upper()}")
+        if scrim_cat and len(scrim_cat.channels) == 0:
+            try:
+                await scrim_cat.delete()
+            except Exception:
+                pass
+
+        # Delete ONLY this tournament's registration message (not all bot messages)
+        reg_msg_id = t_data.get("register_message_id")
+        reg_ch = bot.get_channel(get_cfg(guild.id, "channel_id"))
+        if reg_ch and reg_msg_id:
+            try:
+                msg = await reg_ch.fetch_message(reg_msg_id)
+                await msg.delete()
+            except Exception:
+                pass
+
+        # Remove roles only from THIS tournament's players
         scrim_role     = guild.get_role(get_cfg(guild.id, "role_id"))
         spectator_role = guild.get_role(get_cfg(guild.id, "spectator_role_id"))
         game_links_ch  = guild.get_channel(get_cfg(guild.id, "game_links_id"))
         scrim_chat_ch  = guild.get_channel(get_cfg(guild.id, "scrim_chat_id"))
 
-        if t_data.get("teams"):
-            for team in t_data["teams"]:
-                if team.get("status") == "accepted":
-                    all_players = team.get("players", []) + team.get("substitutes_list", [])
-                    for player in all_players:
-                        member = guild.get_member(int(player["discord_id"]))
-                        if member and scrim_role and scrim_role in member.roles:
-                            try:
-                                await member.remove_roles(scrim_role)
-                            except Exception:
-                                pass
-                    for coach in team.get("coaches", []):
-                        member = guild.get_member(int(coach["discord_id"]))
-                        if not member:
-                            continue
-                        if spectator_role and spectator_role in member.roles:
-                            try:
-                                await member.remove_roles(spectator_role)
-                            except Exception:
-                                pass
-                        if game_links_ch:
-                            try:
-                                await game_links_ch.set_permissions(member, overwrite=None)
-                            except Exception:
-                                pass
-                        if scrim_chat_ch:
-                            try:
-                                await scrim_chat_ch.set_permissions(member, overwrite=None)
-                            except Exception:
-                                pass
+        for team in t_data.get("teams", []):
+            if team.get("status") == "accepted":
+                all_players = team.get("players", []) + team.get("substitutes_list", [])
+                for player in all_players:
+                    member = guild.get_member(int(player["discord_id"]))
+                    if member and scrim_role and scrim_role in member.roles:
+                        try:
+                            await member.remove_roles(scrim_role)
+                        except Exception:
+                            pass
+                for coach in team.get("coaches", []):
+                    member = guild.get_member(int(coach["discord_id"]))
+                    if not member:
+                        continue
+                    if spectator_role and spectator_role in member.roles:
+                        try:
+                            await member.remove_roles(spectator_role)
+                        except Exception:
+                            pass
+                    if game_links_ch:
+                        try:
+                            await game_links_ch.set_permissions(member, overwrite=None)
+                        except Exception:
+                            pass
+                    if scrim_chat_ch:
+                        try:
+                            await scrim_chat_ch.set_permissions(member, overwrite=None)
+                        except Exception:
+                            pass
 
-        clear_tournament(guild.id)
-        await ctx.send(f"✅ Tournament deleted. Removed **{deleted}** team channel(s).")
+        clear_tournament(guild.id, tid)
+        await ctx.send(f"✅ Tournament **{t_data.get('title', t_data['format'].upper())}** deleted. Removed **{deleted}** channel(s).")
 
     else:
         await ctx.send(
