@@ -4763,12 +4763,23 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
     else:
         await ctx.send(
             "❌ Unknown subcommand!\n"
-            "Available: `r!tournament create FORMAT, Title, Desc, Timestamp` · `r!tournament list` · "
-            "`r!tournament close` · `r!tournament start` · `r!tournament delete`"
+            "• `r!tournament create FORMAT, GROUPS, SUBS, Title, Desc, Timestamp`\n"
+            "• `r!tournament list` — Show all registered teams\n"
+            "• `r!tournament close` — Close registrations\n"
+            "• `r!tournament start [ID]` — Create team voice channels\n"
+            "• `r!tournament repair [ID]` — Restore registration post + voice channels\n"
+            "• `r!tournament remove NAME/ID` — Remove a team\n"
+            "• `r!tournament delete` — End tournament & full cleanup"
         )
 
 
-# ── Hook ticket handler into on_message ───────────────────────────────────────
+# ─── r!repairtourn shortcut ────────────────────────────────────────────────────
+
+@bot.command()
+@has_allowed_role()
+async def repairtourn(ctx, tournament_id: str = None):
+    """Shortcut for r!tournament repair [ID]"""
+    await tournament(ctx, subcommand="repair", args=tournament_id)
 # (Called from the existing on_message event)
 
 async def maybe_handle_ticket(message: discord.Message):
