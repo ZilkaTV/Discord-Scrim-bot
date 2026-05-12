@@ -634,6 +634,10 @@ async def on_ready():
     active_tickets.update(load_active_tickets())
     print(f"Loaded {len(active_tickets)} active ticket(s)")
 
+    # Register persistent views so buttons survive restarts
+    bot.add_view(TournamentRegisterView(guild_id=0, tournament_id="t0"))
+    bot.add_view(TeamApprovalView(guild_id=0, team_id="team_0"))
+
     # Start loops only if not already running
     if not check_events.is_running():
         check_events.start()
@@ -3401,9 +3405,155 @@ class TeamApprovalView(discord.ui.View):
         super().__init__(timeout=None)
         self.guild_id = guild_id
         self.team_id  = team_id
+        # Encode IDs in custom_id so buttons survive bot restarts
+        self.accept_btn.custom_id = f"tourn_accept:{guild_id}:{team_id}"
+        self.reject_btn.custom_id = f"tourn_reject:{guild_id}:{team_id}"
 
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="tourn_accept")
-    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Parse IDs from custom_id
+        parts = button.custom_id.split(":")
+        guild_id = int(parts[1]) if len(parts) > 1 else self.guild_id
+        team_id  = parts[2]     if len(parts) > 2 else self.team_id
+
+        allowed = get_cfg(guild_id, "allowed_roles")
+        user_role_ids = [r.id for r in interaction.user.roles]
+        if not interaction.user.guild_permissions.administrator and not any(r in user_role_ids for r in allowed):
+            await interaction.response.send_message("❌ Only Staff/Host can accept teams.", ephemeral=True)
+            return
+
+        t_data = load_tournament(guild_id)
+        team   = next((t for t in t_data.get("teams", []) if t["team_id"] == team_id), None)
+        if not team:
+            await interaction.response.send_message("❌ Team not found.", ephemeral=True)
+            return
+        if team["status"] == "accepted":
+            await interaction.response.send_message("⚠️ Already accepted.", ephemeral=True)
+            return
+
+        team["status"] = "accepted"
+        save_tournament(guild_id, t_data)
+
+        accepted_count = len([t for t in t_data["teams"] if t["status"] == "accepted"])
+        slots_left     = t_data["max_teams"] - accepted_count
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+
+        player_mentions = " ".join(f"<@{p['discord_id']}>" for p in team["players"])
+        await interaction.response.send_message(
+            f"✅ **{team['tag']} {team['name']}** accepted by {interaction.user.mention}!\n"
+            f"Players: {player_mentions}\n"
+            f"Slots remaining: **{slots_left}/{t_data['max_teams']}**"
+        )
+
+        await update_tournament_embeds(interaction.guild, t_data)
+        await give_scrim_role_to_team(interaction.guild, team, guild_id)
+
+        # Give all team members ticket access then notify
+        ticket_ch = interaction.guild.get_channel(team.get("ticket_channel_id"))
+        if ticket_ch:
+            all_team_members = (
+                [p["discord_id"] for p in team.get("players", [])] +
+                [p["discord_id"] for p in team.get("substitutes_list", [])] +
+                [p["discord_id"] for p in team.get("coaches", [])]
+            )
+            for uid in all_team_members:
+                member = interaction.guild.get_member(int(uid))
+                if member:
+                    try:
+                        await ticket_ch.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+                    except Exception:
+                        pass
+            player_pings = " ".join(f"<@{uid}>" for uid in all_team_members)
+            await ticket_ch.send(
+                f"🎉 {player_pings}\n"
+                f"Your team **{team['tag']} {team['name']}** has been **accepted**! "
+                f"You're in the scrim. Good luck! 🏆"
+            )
+
+        # Give coaches spectator role + channel access
+        spectator_role = interaction.guild.get_role(get_cfg(guild_id, "spectator_role_id"))
+        game_links_ch  = interaction.guild.get_channel(get_cfg(guild_id, "game_links_id"))
+        scrim_chat_ch  = interaction.guild.get_channel(get_cfg(guild_id, "scrim_chat_id"))
+        for coach in team.get("coaches", []):
+            member = interaction.guild.get_member(int(coach["discord_id"]))
+            if not member:
+                continue
+            if spectator_role and spectator_role not in member.roles:
+                try:
+                    await member.add_roles(spectator_role)
+                except Exception:
+                    pass
+            if game_links_ch:
+                try:
+                    await game_links_ch.set_permissions(member, view_channel=True, send_messages=False, read_message_history=True)
+                except Exception:
+                    pass
+            if scrim_chat_ch:
+                try:
+                    await scrim_chat_ch.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+                except Exception:
+                    pass
+
+        # Auto-close if full
+        if slots_left <= 0:
+            t_data["closed"] = True
+            save_tournament(guild_id, t_data)
+            for ch_id, state in list(active_tickets.items()):
+                if state.get("guild_id") == guild_id:
+                    ticket_ch2 = interaction.guild.get_channel(ch_id)
+                    if ticket_ch2:
+                        try:
+                            await ticket_ch2.send("🔒 **Registration is now CLOSED — all slots are filled!** You can no longer complete your registration.")
+                        except Exception:
+                            pass
+            await update_tournament_embeds(interaction.guild, t_data)
+            register_channel = bot.get_channel(get_cfg(guild_id, "channel_id"))
+            if register_channel:
+                await register_channel.send("🔒 **Registration is now CLOSED!** All team slots are filled.")
+            await interaction.followup.send("🔒 Tournament is **full** – registration automatically closed!")
+
+    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger, custom_id="tourn_reject")
+    async def reject_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        parts    = button.custom_id.split(":")
+        guild_id = int(parts[1]) if len(parts) > 1 else self.guild_id
+        team_id  = parts[2]     if len(parts) > 2 else self.team_id
+
+        allowed = get_cfg(guild_id, "allowed_roles")
+        user_role_ids = [r.id for r in interaction.user.roles]
+        if not interaction.user.guild_permissions.administrator and not any(r in user_role_ids for r in allowed):
+            await interaction.response.send_message("❌ Only Staff/Host can reject teams.", ephemeral=True)
+            return
+
+        t_data = load_tournament(guild_id)
+        team   = next((t for t in t_data.get("teams", []) if t["team_id"] == team_id), None)
+        if not team:
+            await interaction.response.send_message("❌ Team not found.", ephemeral=True)
+            return
+
+        team["status"] = "rejected"
+        save_tournament(guild_id, t_data)
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+
+        player_mentions = " ".join(f"<@{p['discord_id']}>" for p in team["players"])
+        await interaction.response.send_message(
+            f"❌ **{team['tag']} {team['name']}** rejected by {interaction.user.mention}.\n"
+            f"Players: {player_mentions}"
+        )
+
+        ticket_ch_id = team.get("ticket_channel_id")
+        if ticket_ch_id:
+            ticket_ch = interaction.guild.get_channel(ticket_ch_id)
+            if ticket_ch:
+                await ticket_ch.send(
+                    f"❌ Unfortunately your team **{team['tag']} {team['name']}** was **rejected**.\n"
+                    f"Contact a host for more information. You may re-register if registration is still open."
+                )
         allowed = get_cfg(self.guild_id, "allowed_roles")
         user_role_ids = [r.id for r in interaction.user.roles]
         if not interaction.user.guild_permissions.administrator and not any(r in user_role_ids for r in allowed):
@@ -3519,42 +3669,7 @@ class TeamApprovalView(discord.ui.View):
                 )
             await interaction.followup.send("🔒 Tournament is **full** – registration automatically closed!")
 
-    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger, custom_id="tourn_reject")
-    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        allowed = get_cfg(self.guild_id, "allowed_roles")
-        user_role_ids = [r.id for r in interaction.user.roles]
-        if not interaction.user.guild_permissions.administrator and not any(r in user_role_ids for r in allowed):
-            await interaction.response.send_message("❌ Only Staff/Host can reject teams.", ephemeral=True)
-            return
 
-        t_data = load_tournament(self.guild_id)
-        team   = next((t for t in t_data.get("teams", []) if t["team_id"] == self.team_id), None)
-        if not team:
-            await interaction.response.send_message("❌ Team not found.", ephemeral=True)
-            return
-
-        team["status"] = "rejected"
-        save_tournament(self.guild_id, t_data)
-
-        for item in self.children:
-            item.disabled = True
-        await interaction.message.edit(view=self)
-
-        player_mentions = " ".join(f"<@{p['discord_id']}>" for p in team["players"])
-        await interaction.response.send_message(
-            f"❌ **{team['tag']} {team['name']}** rejected by {interaction.user.mention}.\n"
-            f"Players: {player_mentions}"
-        )
-
-        # Notify in ticket channel
-        ticket_ch_id = team.get("ticket_channel_id")
-        if ticket_ch_id:
-            ticket_ch = interaction.guild.get_channel(ticket_ch_id)
-            if ticket_ch:
-                await ticket_ch.send(
-                    f"❌ Unfortunately your team **{team['tag']} {team['name']}** was **rejected**.\n"
-                    f"Please contact a Host for more information."
-                )
 
 
 # ── Ticket conversation handler (called from on_message) ──────────────────────
