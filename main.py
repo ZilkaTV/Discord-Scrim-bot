@@ -2923,10 +2923,13 @@ async def slash_lbwins(interaction: discord.Interaction, user_id: str, wins: int
 @bot.command()
 @has_allowed_role()
 async def repairroles(ctx):
-    """Restores Scrim Player roles to all accepted tournament players."""
-    guild      = ctx.guild
-    t_data     = load_tournament(guild.id)
-    scrim_role = guild.get_role(get_cfg(guild.id, "role_id"))
+    """Restores Scrim Player roles to all accepted tournament players (starters + subs) and Spectator roles to coaches."""
+    guild          = ctx.guild
+    t_data         = load_tournament(guild.id)
+    scrim_role     = guild.get_role(get_cfg(guild.id, "role_id"))
+    spectator_role = guild.get_role(get_cfg(guild.id, "spectator_role_id"))
+    game_links_ch  = guild.get_channel(get_cfg(guild.id, "game_links_id"))
+    scrim_chat_ch  = guild.get_channel(get_cfg(guild.id, "scrim_chat_id"))
 
     if not t_data:
         await ctx.send("❌ No active tournament data found.")
@@ -2940,11 +2943,15 @@ async def repairroles(ctx):
         await ctx.send("❌ No accepted teams found.")
         return
 
-    await ctx.send(f"⏳ Restoring Scrim Player roles for **{len(accepted)}** teams...")
+    await ctx.send(f"⏳ Restoring roles for **{len(accepted)}** teams...")
 
-    restored = 0
-    skipped  = 0
+    players_restored  = 0
+    players_skipped   = 0
+    coaches_restored  = 0
+    coaches_skipped   = 0
+
     for team in accepted:
+        # Starters + substitutes → Scrim Player role
         all_players = team.get("players", []) + team.get("substitutes_list", [])
         for p in all_players:
             member = guild.get_member(int(p["discord_id"]))
@@ -2952,16 +2959,40 @@ async def repairroles(ctx):
                 if scrim_role not in member.roles:
                     try:
                         await member.add_roles(scrim_role)
-                        restored += 1
+                        players_restored += 1
                     except Exception as e:
-                        print(f"Could not restore role for {p['discord_id']}: {e}")
+                        print(f"Could not restore scrim role for {p['discord_id']}: {e}")
                 else:
-                    skipped += 1
+                    players_skipped += 1
+
+        # Coaches → Spectator role + channel access
+        for coach in team.get("coaches", []):
+            member = guild.get_member(int(coach["discord_id"]))
+            if not member:
+                continue
+            if spectator_role and spectator_role not in member.roles:
+                try:
+                    await member.add_roles(spectator_role)
+                    coaches_restored += 1
+                except Exception as e:
+                    print(f"Could not restore spectator role for coach {coach['discord_id']}: {e}")
+            else:
+                coaches_skipped += 1
+            if game_links_ch:
+                try:
+                    await game_links_ch.set_permissions(member, view_channel=True, send_messages=False, read_message_history=True)
+                except Exception:
+                    pass
+            if scrim_chat_ch:
+                try:
+                    await scrim_chat_ch.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+                except Exception:
+                    pass
 
     await ctx.send(
         f"✅ Role repair complete!\n"
-        f"• **{restored}** player(s) restored\n"
-        f"• **{skipped}** already had the role"
+        f"🎮 Players — **{players_restored}** restored, {players_skipped} already had Scrim Player role\n"
+        f"🧑‍🏫 Coaches — **{coaches_restored}** restored Spectator role + channel access, {coaches_skipped} already set"
     )
 
 
@@ -4223,10 +4254,23 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
 
     # ── START ─────────────────────────────────────────────────────────────────
     elif subcommand == "start":
-        t_data = load_tournament(guild.id)
-        if not t_data:
-            await ctx.send("❌ No active tournament.")
+        # Support optional tournament ID: r!tournament start [ID]
+        tournaments = load_tournaments(guild.id)
+        if not tournaments:
+            await ctx.send("❌ No active tournaments.")
             return
+        if len(tournaments) > 1:
+            if not args:
+                ids_list = "\n".join(f"• `{t.get('tournament_id')}` — **{t.get('title', t['format'].upper())}**" for t in tournaments)
+                await ctx.send(f"⚠️ Multiple tournaments active. Please specify an ID:\n{ids_list}\nUsage: `r!tournament start TOURNAMENT_ID`")
+                return
+            t_data = load_tournament(guild.id, args.strip())
+            if not t_data:
+                await ctx.send(f"❌ No tournament found with ID `{args.strip()}`.\nUse `r!tournament list` to see all IDs.")
+                return
+        else:
+            t_data = tournaments[0]
+
         accepted = [t for t in t_data.get("teams", []) if t["status"] == "accepted"]
         if not accepted:
             await ctx.send("❌ No accepted teams yet.")
@@ -4387,6 +4431,136 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
                 color=discord.Color.green()
             )
             await register_channel.send(content=scrim_role.mention, embed=embed)
+
+    # ── REPAIR ────────────────────────────────────────────────────────────────
+    elif subcommand == "repair":
+        tournaments = load_tournaments(guild.id)
+        if not tournaments:
+            await ctx.send("❌ No active tournament data found.")
+            return
+
+        # If multiple tournaments, pick by ID or default to first
+        if args and args.strip():
+            t_data = load_tournament(guild.id, args.strip())
+            if not t_data:
+                await ctx.send(f"❌ No tournament found with ID `{args.strip()}`.")
+                return
+        else:
+            t_data = tournaments[0]
+            if len(tournaments) > 1:
+                ids_list = "\n".join(f"• `{t.get('tournament_id')}` — **{t.get('title', t['format'].upper())}**" for t in tournaments)
+                await ctx.send(f"ℹ️ Multiple tournaments found. Using the first one. Specify ID to target a specific one:\n{ids_list}")
+
+        await ctx.send("⏳ Repairing tournament registration post...")
+
+        register_channel = bot.get_channel(get_cfg(guild.id, "channel_id"))
+        if not register_channel:
+            await ctx.send("❌ Register channel not found. Check setup.")
+            return
+
+        # Rebuild the registration embed
+        mention_roles = get_cfg(guild.id, "mention_roles")
+        mentions      = " ".join(f"<@&{r}>" for r in mention_roles)
+        accepted      = [t for t in t_data.get("teams", []) if t["status"] == "accepted"]
+        max_teams     = t_data["max_teams"]
+        fmt           = t_data.get("format", "?").upper()
+        title         = t_data.get("title", fmt)
+        substitutes   = t_data.get("substitutes", 0)
+        groups        = t_data.get("groups", 1)
+        team_size     = t_data.get("team_size", 1)
+
+        event_id   = t_data.get("event_id")
+        event_link = f"https://discord.com/events/{guild.id}/{event_id}" if event_id else ""
+
+        sub_line    = f"**Substitutes:** {substitutes} per team\n" if substitutes > 0 else ""
+        groups_line = f"**Groups:** {groups} (à {t_data.get('teams_per_group', max_teams // groups)} teams)\n" if groups > 1 else ""
+
+        embed = discord.Embed(
+            title=f"🏆 {title}",
+            description=(
+                f"{t_data.get('description', '')}\n\n"
+                f"**Format:** {fmt}\n"
+                f"**Team Size:** {team_size} players per team\n"
+                + groups_line + sub_line +
+                f"**Total Teams:** {max_teams}\n\n"
+                + (f"[📅 View Event]({event_link})\n\n" if event_link else "")
+                + f"Click the button below to register your team!"
+            ),
+            color=discord.Color.gold()
+        )
+        status_val  = "🔴 Closed" if t_data.get("closed") else "🟢 Open"
+        status_name = "🔒 Status" if t_data.get("closed") else "🔓 Status"
+        embed.add_field(name="📊 Slots", value=f"{len(accepted)} / {max_teams} teams", inline=True)
+        embed.add_field(name=status_name, value=status_val, inline=True)
+
+        tid  = t_data.get("tournament_id", "t0")
+        view = TournamentRegisterView(guild_id=guild.id, tournament_id=tid)
+        msg  = await register_channel.send(content=mentions, embed=embed, view=view)
+
+        t_data["register_message_id"] = msg.id
+        save_tournament(guild.id, t_data)
+
+        await ctx.send(
+            f"✅ Registration post repaired in {register_channel.mention}!\n"
+            f"• **{len(accepted)}/{max_teams}** teams currently registered\n"
+            f"• Status: {status_val}\n"
+            + (f"• Event link restored: [Click here]({event_link})\n" if event_link else "")
+        )
+
+        # Check if voice channels were already created — offer to recreate missing ones
+        teams_missing_vc = [t for t in accepted if not t.get("channel_id") or not guild.get_channel(t.get("channel_id", 0))]
+        if teams_missing_vc:
+            is_ffa  = fmt.startswith("FFA")
+            is_solo = team_size == 1
+
+            if is_ffa:
+                await ctx.send(f"🔊 Found **{len(teams_missing_vc)}** FFA players without a voice channel. Recreating shared FFA VC...")
+                cat_name = f"🏆 SCRIM — {fmt}"
+                category = discord.utils.get(guild.categories, name=cat_name)
+                if not category:
+                    category = await guild.create_category(cat_name)
+                allowed_role_ids = get_cfg(guild.id, "allowed_roles")
+                allowed_roles    = [guild.get_role(rid) for rid in allowed_role_ids if guild.get_role(rid)]
+                overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+                for role in allowed_roles:
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, connect=True)
+                for team in accepted:
+                    member = guild.get_member(int(team["captain_id"]))
+                    if member:
+                        overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
+                ffa_ch = await guild.create_voice_channel(f"ffa-{title.lower().replace(' ','-')[:20]}", category=category, overwrites=overwrites)
+                for team in accepted:
+                    team["channel_id"] = ffa_ch.id
+                save_tournament(guild.id, t_data)
+                await ctx.send(f"✅ Shared FFA voice channel recreated: {ffa_ch.mention}")
+
+            elif not is_solo and teams_missing_vc:
+                await ctx.send(f"🔊 Found **{len(teams_missing_vc)}** teams without a voice channel. Recreating...")
+                cat_name = f"🏆 SCRIM — {fmt}"
+                category = discord.utils.get(guild.categories, name=cat_name)
+                if not category:
+                    category = await guild.create_category(cat_name)
+                allowed_role_ids = get_cfg(guild.id, "allowed_roles")
+                allowed_roles    = [guild.get_role(rid) for rid in allowed_role_ids if guild.get_role(rid)]
+                for i, team in enumerate(teams_missing_vc):
+                    all_members = (
+                        [guild.get_member(int(p["discord_id"])) for p in team.get("players", [])] +
+                        [guild.get_member(int(p["discord_id"])) for p in team.get("substitutes_list", [])] +
+                        [guild.get_member(int(c["discord_id"])) for c in team.get("coaches", [])]
+                    )
+                    all_members = [m for m in all_members if m]
+                    overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+                    for role in allowed_roles:
+                        overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+                    for member in all_members:
+                        overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
+                    ch_name = f"team-{team['name'].lower().replace(' ','-')[:20]}"
+                    ch = await guild.create_voice_channel(ch_name, category=category, overwrites=overwrites)
+                    team["channel_id"] = ch.id
+                save_tournament(guild.id, t_data)
+                await ctx.send(f"✅ Recreated **{len(teams_missing_vc)}** voice channels.")
+            else:
+                pass  # Solo — no VCs needed
 
     # ── REMOVE ────────────────────────────────────────────────────────────────
     elif subcommand == "remove":
@@ -4636,12 +4810,22 @@ async def slash_tournament_close(interaction: discord.Interaction):
     ctx = await commands.Context.from_interaction(interaction)
     await tournament(ctx, subcommand="close")
 
-@bot.tree.command(name="tournament_start", description="Create private team channels")
+@bot.tree.command(name="tournament_start", description="Create private team channels and start the scrim")
 @slash_has_role()
-async def slash_tournament_start(interaction: discord.Interaction):
+@app_commands.describe(tournament_id="Tournament ID — only needed if multiple tournaments are active")
+async def slash_tournament_start(interaction: discord.Interaction, tournament_id: str = None):
     await interaction.response.defer()
     ctx = await commands.Context.from_interaction(interaction)
-    await tournament(ctx, subcommand="start")
+    await tournament(ctx, subcommand="start", args=tournament_id)
+
+@bot.tree.command(name="tournament_repair", description="Restore missing registration post in #register-for-scrim")
+@slash_has_role()
+@app_commands.describe(tournament_id="Tournament ID — from /tournament_list (optional if only one active)")
+async def slash_tournament_repair(interaction: discord.Interaction, tournament_id: str = None):
+    await interaction.response.defer()
+    ctx = await commands.Context.from_interaction(interaction)
+    await tournament(ctx, subcommand="repair", args=tournament_id)
+
 
 @bot.tree.command(name="tournament_delete", description="End the tournament and delete all channels")
 @slash_has_role()
