@@ -3401,20 +3401,22 @@ class TournamentRegisterView(discord.ui.View):
 # ── Accept/Reject View ────────────────────────────────────────────────────────
 
 class TeamApprovalView(discord.ui.View):
-    def __init__(self, guild_id: int, team_id: str):
+    def __init__(self, guild_id: int, team_id: str, tournament_id: str = "t0"):
         super().__init__(timeout=None)
-        self.guild_id = guild_id
-        self.team_id  = team_id
-        # Encode IDs in custom_id so buttons survive bot restarts
-        self.accept_btn.custom_id = f"tourn_accept:{guild_id}:{team_id}"
-        self.reject_btn.custom_id = f"tourn_reject:{guild_id}:{team_id}"
+        self.guild_id      = guild_id
+        self.team_id       = team_id
+        self.tournament_id = tournament_id
+        # Encode all three IDs in custom_id so buttons survive bot restarts
+        self.accept_btn.custom_id = f"tourn_accept:{guild_id}:{tournament_id}:{team_id}"
+        self.reject_btn.custom_id = f"tourn_reject:{guild_id}:{tournament_id}:{team_id}"
 
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="tourn_accept")
     async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Parse IDs from custom_id
-        parts = button.custom_id.split(":")
-        guild_id = int(parts[1]) if len(parts) > 1 else self.guild_id
-        team_id  = parts[2]     if len(parts) > 2 else self.team_id
+        # Parse IDs from custom_id: tourn_accept:guild_id:tournament_id:team_id
+        parts         = button.custom_id.split(":")
+        guild_id      = int(parts[1]) if len(parts) > 1 else self.guild_id
+        tournament_id = parts[2]     if len(parts) > 3 else self.tournament_id
+        team_id       = parts[3]     if len(parts) > 3 else (parts[2] if len(parts) > 2 else self.team_id)
 
         allowed = get_cfg(guild_id, "allowed_roles")
         user_role_ids = [r.id for r in interaction.user.roles]
@@ -3422,7 +3424,9 @@ class TeamApprovalView(discord.ui.View):
             await interaction.response.send_message("❌ Only Staff/Host can accept teams.", ephemeral=True)
             return
 
-        t_data = load_tournament(guild_id)
+        t_data = load_tournament(guild_id, tournament_id)
+        if not t_data:
+            t_data = load_tournament(guild_id)  # fallback
         team   = next((t for t in t_data.get("teams", []) if t["team_id"] == team_id), None)
         if not team:
             await interaction.response.send_message("❌ Team not found.", ephemeral=True)
@@ -3517,9 +3521,10 @@ class TeamApprovalView(discord.ui.View):
 
     @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger, custom_id="tourn_reject")
     async def reject_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        parts    = button.custom_id.split(":")
-        guild_id = int(parts[1]) if len(parts) > 1 else self.guild_id
-        team_id  = parts[2]     if len(parts) > 2 else self.team_id
+        parts         = button.custom_id.split(":")
+        guild_id      = int(parts[1]) if len(parts) > 1 else self.guild_id
+        tournament_id = parts[2]     if len(parts) > 3 else self.tournament_id
+        team_id       = parts[3]     if len(parts) > 3 else (parts[2] if len(parts) > 2 else self.team_id)
 
         allowed = get_cfg(guild_id, "allowed_roles")
         user_role_ids = [r.id for r in interaction.user.roles]
@@ -3527,7 +3532,9 @@ class TeamApprovalView(discord.ui.View):
             await interaction.response.send_message("❌ Only Staff/Host can reject teams.", ephemeral=True)
             return
 
-        t_data = load_tournament(guild_id)
+        t_data = load_tournament(guild_id, tournament_id)
+        if not t_data:
+            t_data = load_tournament(guild_id)
         team   = next((t for t in t_data.get("teams", []) if t["team_id"] == team_id), None)
         if not team:
             await interaction.response.send_message("❌ Team not found.", ephemeral=True)
@@ -4010,7 +4017,7 @@ async def _submit_team(message, state, t_data, guild_id, team_size):
     starters = [{'name': state['data']['captain_name'], 'discord_id': captain_id}] + \
                [{'name': names[i], 'discord_id': ids[i]} for i in range(len(names))]
 
-    team_id = f"team_{len(t_data.get('teams', []))}"
+    team_id = f"{t_data.get('tournament_id','t0')}_team_{len(t_data.get('teams', []))}"
     team = {
         'team_id': team_id, 'name': state['data']['team_name'], 'tag': state['data']['team_tag'],
         'captain_name': state['data']['captain_name'], 'captain_id': captain_id,
@@ -4056,7 +4063,7 @@ async def _submit_team(message, state, t_data, guild_id, team_size):
             color=discord.Color.orange()
         )
         review.set_footer(text=f"Team ID: {team_id} | Use ✅ Accept or ❌ Reject below")
-        view = TeamApprovalView(guild_id=guild_id, team_id=team_id)
+        view = TeamApprovalView(guild_id=guild_id, team_id=team_id, tournament_id=t_data.get("tournament_id", "t0"))
         await review_ch.send(embed=review, view=view)
 
     remove_active_ticket(message.channel.id)
@@ -4668,7 +4675,78 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             f"2. Add teams back manually if needed with `r!tournament repair` buttons\n"
             f"   *(or have players re-register)*"
         )
-    elif subcommand == "repair":
+
+    # ── SETREVIEW ─────────────────────────────────────────────────────────────
+    elif subcommand == "setreview":
+        tournaments = load_tournaments(guild.id)
+        if not tournaments:
+            await ctx.send("❌ No active tournaments.")
+            return
+
+        if len(tournaments) > 1 and args and args.strip():
+            t_data = load_tournament(guild.id, args.strip())
+            if not t_data:
+                t_data = tournaments[0]
+        else:
+            t_data = tournaments[0]
+
+        tid = t_data.get("tournament_id", "t0")
+
+        allowed_role_ids = get_cfg(guild.id, "allowed_roles")
+        allowed_roles    = [guild.get_role(rid) for rid in allowed_role_ids if guild.get_role(rid)]
+
+        cat_name = f"📋 TICKETS — {t_data.get('title', t_data['format'])[:20].upper()}"
+        category = discord.utils.get(guild.categories, name=cat_name)
+        if not category:
+            category = await guild.create_category(cat_name)
+
+        review_overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+        for role in allowed_roles:
+            review_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+        review_ch = await guild.create_text_channel(
+            name=f"registrations-{t_data.get('title','scrim').lower().replace(' ','-')[:20]}",
+            category=category,
+            overwrites=review_overwrites,
+            topic=f"Team registrations for {t_data.get('title','?')} | Staff/Host only"
+        )
+
+        t_data["review_channel_id"] = review_ch.id
+        save_tournament(guild.id, t_data)
+
+        # Re-post all pending teams with Accept/Reject buttons
+        pending = [t for t in t_data.get("teams", []) if t["status"] == "pending"]
+        for team in pending:
+            coaches  = team.get("coaches", [])
+            subs     = team.get("substitutes_list", [])
+            cap_id   = team.get("captain_id", "")
+            starters_no_cap = [p for p in team.get("players", []) if p["discord_id"] != cap_id]
+
+            lines = []
+            if coaches:
+                lines.append("🧑‍🏫 **Coach:** " + " / ".join(f"{c['name']} <@{c['discord_id']}>" for c in coaches))
+            lines.append(f"👤 **Captain:** {team.get('captain_name','?')} <@{cap_id}>")
+            if starters_no_cap:
+                lines.append("🎮 **Starters:** " + " / ".join(f"{p['name']} <@{p['discord_id']}>" for p in starters_no_cap))
+            if subs:
+                lines.append("🔄 **Substitutes:** " + " / ".join(f"{p['name']} <@{p['discord_id']}>" for p in subs))
+            lines.append(f"\n📬 Submitted by <@{team.get('submitter', '?')}>")
+
+            review = discord.Embed(
+                title=f"📋 {team.get('tag','[?]')} {team['name']}",
+                description="\n".join(lines),
+                color=discord.Color.orange()
+            )
+            review.set_footer(text=f"Team ID: {team['team_id']} | Use ✅ Accept or ❌ Reject below")
+            view = TeamApprovalView(guild_id=guild.id, team_id=team["team_id"], tournament_id=tid)
+            await review_ch.send(embed=review, view=view)
+
+        await ctx.send(
+            f"✅ Review channel created: {review_ch.mention}\n"
+            f"• **{len(pending)}** pending team(s) posted with Accept/Reject buttons"
+        )
+
+    # ── REPAIR ────────────────────────────────────────────────────────────────
         tournaments = load_tournaments(guild.id)
         if not tournaments:
             await ctx.send("❌ No active tournament data found.")
