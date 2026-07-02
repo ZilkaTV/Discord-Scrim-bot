@@ -685,9 +685,13 @@ async def check_events():
                 # Wide window so a reconnect during that minute doesn't cause it to be missed
                 if 1680 <= diff <= 1920 and event.id not in warned_events:
                     try:
-                        channel    = bot.get_channel(get_cfg(guild.id, "channel_id"))
-                        role       = guild.get_role(get_cfg(guild.id, "role_id"))
-                        event_link = f"https://discord.com/events/{guild.id}/{event.id}"
+                        channel       = bot.get_channel(get_cfg(guild.id, "channel_id"))
+                        role          = guild.get_role(get_cfg(guild.id, "role_id"))
+                        mention_roles = get_cfg(guild.id, "mention_roles")
+                        all_pings     = " ".join(f"<@&{r}>" for r in mention_roles)
+                        if role:
+                            all_pings = f"{all_pings} {role.mention}".strip()
+                        event_link    = f"https://discord.com/events/{guild.id}/{event.id}"
 
                         # Check if this is a tournament event
                         t_data = load_tournament(guild.id)
@@ -714,7 +718,7 @@ async def check_events():
                                 color=discord.Color.yellow()
                             )
 
-                        await channel.send(content=f"{role.mention}", embed=embed)
+                        await channel.send(content=all_pings, embed=embed)
                         warned_events.add(event.id)
                         print(f"30 minute warning sent for {event.name}")
                     except Exception as e:
@@ -1191,13 +1195,20 @@ async def create(ctx, *, args):
 
     title       = parts[0]
     description = parts[1]
+    time_str    = ",".join(parts[2:]).strip()  # rejoin in case timestamp has commas
 
-    try:
-        raw       = parts[2].strip("<>").replace("t:", "").split(":")[0]
-        timestamp = int(raw)
-    except ValueError:
-        await ctx.send("❌ Invalid timestamp!")
-        return
+    import re
+    ts_match = re.search(r'<t:(\d+)', time_str)
+    if not ts_match:
+        # Also try plain integer
+        plain = time_str.strip()
+        if plain.isdigit():
+            timestamp = int(plain)
+        else:
+            await ctx.send("❌ Invalid timestamp! Use format: `<t:1700000000:R>` from discordtimestamp.com")
+            return
+    else:
+        timestamp = int(ts_match.group(1))
 
     guild         = ctx.guild
     event_channel = guild.get_channel(get_cfg(guild.id, "event_channel_id"))
@@ -4692,6 +4703,16 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
 
         tid = t_data.get("tournament_id", "t0")
 
+        # Check if review channel already exists — don't create a duplicate
+        existing_review_ch = guild.get_channel(t_data.get("review_channel_id", 0))
+        if existing_review_ch:
+            await ctx.send(
+                f"⚠️ A review channel already exists for **{t_data.get('title','this tournament')}**: {existing_review_ch.mention}\n"
+                f"Delete it manually first if you want to recreate it."
+            )
+            return
+
+
         allowed_role_ids = get_cfg(guild.id, "allowed_roles")
         allowed_roles    = [guild.get_role(rid) for rid in allowed_role_ids if guild.get_role(rid)]
 
@@ -4881,18 +4902,24 @@ async def tournament(ctx, subcommand: str = None, *, args=None):
             await ctx.send("❌ No active tournaments.")
             return
 
-        # Require ID if multiple tournaments exist
-        if len(tournaments) > 1:
-            if not args:
-                ids_list = "\n".join(f"• `{t.get('tournament_id')}` — **{t.get('title', t['format'].upper())}**" for t in tournaments)
-                await ctx.send(f"⚠️ Multiple tournaments active. Please specify which one to delete:\n{ids_list}\nUsage: `r!tournament delete TOURNAMENT_ID`")
-                return
-            t_data = load_tournament(guild.id, args.strip())
-            if not t_data:
-                await ctx.send(f"❌ No tournament found with ID `{args.strip()}`.\nUse `r!tournament list` to see all IDs.")
-                return
-        else:
-            t_data = tournaments[0]
+        # Always show list and require ID
+        if not args or not args.strip():
+            ids_list = "\n".join(
+                f"• `{t.get('tournament_id')}` — **{t.get('title', t['format'].upper())}** "
+                f"({'🔒 Closed' if t.get('closed') else '🟢 Open'})"
+                for t in tournaments
+            )
+            await ctx.send(
+                f"⚠️ Please specify which tournament to delete:\n{ids_list}\n\n"
+                f"Usage: `r!tournament delete TOURNAMENT_ID`"
+            )
+            return
+
+        t_data = load_tournament(guild.id, args.strip())
+        if not t_data:
+            ids_list = "\n".join(f"• `{t.get('tournament_id')}` — **{t.get('title', t['format'].upper())}**" for t in tournaments)
+            await ctx.send(f"❌ No tournament found with ID `{args.strip()}`.\n\nActive tournaments:\n{ids_list}")
+            return
 
         tid = t_data.get("tournament_id", "t0")
         await ctx.send(f"⏳ Cleaning up tournament **{t_data.get('title', t_data['format'].upper())}**...")
